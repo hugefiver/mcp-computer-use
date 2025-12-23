@@ -52,14 +52,26 @@ fn error_to_result(error: &str) -> Result<CallToolResult, McpError> {
         success: false,
         message: Some(error.to_string()),
     };
-    let text = match serde_json::to_string_pretty(&response) {
-        Ok(t) => t,
-        Err(e) => {
+    // Use serde_json without pretty printing as fallback since it's more reliable
+    let text = serde_json::to_string_pretty(&response)
+        .or_else(|_| serde_json::to_string(&response))
+        .unwrap_or_else(|e| {
             tracing::warn!("Failed to serialize error response: {}", e);
-            format!("{{\"success\": false, \"message\": \"{}\"}}", error.replace('"', "\\\""))
-        }
-    };
+            // Construct minimal valid JSON manually
+            format!(r#"{{"success":false,"message":"{}"}}"#, 
+                error.chars()
+                    .filter(|c| c.is_ascii() && *c != '"' && *c != '\\')
+                    .collect::<String>())
+        });
     Ok(CallToolResult::error(vec![Content::text(text)]))
+}
+
+/// Returns an MCP-level error for disabled tools.
+fn disabled_tool_error(tool_name: &str) -> Result<CallToolResult, McpError> {
+    Err(McpError::invalid_request(
+        format!("Tool '{}' is disabled via MCP_DISABLED_TOOLS configuration", tool_name),
+        None,
+    ))
 }
 
 /// MCP Server handler for browser control.
@@ -177,7 +189,7 @@ impl BrowserMcpServer {
     #[tool(description = "Opens the web browser. Call this first before any other browser actions.")]
     async fn open_web_browser(&self) -> Result<CallToolResult, McpError> {
         if self.config.is_tool_disabled(tool_names::OPEN_WEB_BROWSER) {
-            return error_to_result("Tool 'open_web_browser' is disabled");
+            return disabled_tool_error(tool_names::OPEN_WEB_BROWSER);
         }
         info!("Opening web browser");
         match self.browser.open().await {
@@ -216,7 +228,7 @@ impl BrowserMcpServer {
     #[tool(description = "Types text at a specific x, y coordinate. The system can optionally press ENTER after typing and clear existing content before typing.")]
     async fn type_text_at(&self, Parameters(params): Parameters<TypeTextAtParams>) -> Result<CallToolResult, McpError> {
         if self.config.is_tool_disabled(tool_names::TYPE_TEXT_AT) {
-            return error_to_result("Tool 'type_text_at' is disabled");
+            return disabled_tool_error(tool_names::TYPE_TEXT_AT);
         }
         info!("Typing at ({}, {}): {}", params.x, params.y, params.text);
         match self
@@ -242,7 +254,7 @@ impl BrowserMcpServer {
     #[tool(description = "Scrolls the entire webpage 'up', 'down', 'left' or 'right' based on direction.")]
     async fn scroll_document(&self, Parameters(params): Parameters<ScrollDocumentParams>) -> Result<CallToolResult, McpError> {
         if self.config.is_tool_disabled(tool_names::SCROLL_DOCUMENT) {
-            return error_to_result("Tool 'scroll_document' is disabled");
+            return disabled_tool_error(tool_names::SCROLL_DOCUMENT);
         }
         info!("Scrolling document: {}", params.direction);
         match self.browser.scroll_document(&params.direction).await {
@@ -255,7 +267,7 @@ impl BrowserMcpServer {
     #[tool(description = "Scrolls up, down, right, or left at a x, y coordinate by magnitude pixels.")]
     async fn scroll_at(&self, Parameters(params): Parameters<ScrollAtParams>) -> Result<CallToolResult, McpError> {
         if self.config.is_tool_disabled(tool_names::SCROLL_AT) {
-            return error_to_result("Tool 'scroll_at' is disabled");
+            return disabled_tool_error(tool_names::SCROLL_AT);
         }
         info!(
             "Scrolling at ({}, {}) direction: {} magnitude: {}",
@@ -320,7 +332,7 @@ impl BrowserMcpServer {
     #[tool(description = "Directly jumps to a search engine home page. Used when you need to start with a search.")]
     async fn search(&self) -> Result<CallToolResult, McpError> {
         if self.config.is_tool_disabled(tool_names::SEARCH) {
-            return error_to_result("Tool 'search' is disabled");
+            return disabled_tool_error(tool_names::SEARCH);
         }
         info!("Navigating to search engine");
         match self.browser.search().await {
@@ -333,7 +345,7 @@ impl BrowserMcpServer {
     #[tool(description = "Navigates directly to a specified URL. URLs without a protocol will be prefixed with 'https://'.")]
     async fn navigate(&self, Parameters(params): Parameters<NavigateParams>) -> Result<CallToolResult, McpError> {
         if self.config.is_tool_disabled(tool_names::NAVIGATE) {
-            return error_to_result("Tool 'navigate' is disabled");
+            return disabled_tool_error(tool_names::NAVIGATE);
         }
         info!("Navigating to: {}", params.url);
         match self.browser.navigate(&params.url).await {

@@ -9,7 +9,17 @@ use std::sync::Arc;
 use std::time::Duration;
 use thirtyfour::prelude::*;
 use tokio::sync::Mutex;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
+
+/// Delay in milliseconds to wait for page to settle after actions.
+const PAGE_SETTLE_DELAY_MS: u64 = 500;
+
+/// Delay in milliseconds after typing actions.
+const TYPING_DELAY_MS: u64 = 100;
+
+/// Maximum safe integer value for JavaScript (2^53 - 1).
+/// Coordinates beyond this could lose precision in JavaScript.
+const MAX_SAFE_JS_INTEGER: i64 = 9007199254740991;
 
 /// Key mapping from user-friendly names to WebDriver key names.
 fn get_key_mapping(key: &str) -> &str {
@@ -58,10 +68,21 @@ pub struct EnvState {
     pub url: String,
 }
 
-/// Validate coordinates are within reasonable screen bounds.
+/// Validate coordinates are within reasonable screen bounds and safe for JavaScript.
+/// 
+/// Coordinates are validated to ensure:
+/// 1. They are not negative
+/// 2. They are not too far outside screen bounds (allows some tolerance for edge cases)
+/// 3. They are within JavaScript's safe integer range to prevent precision loss
 fn validate_coordinates(x: i64, y: i64, width: u32, height: u32) -> Result<()> {
     if x < 0 || y < 0 {
         return Err(anyhow::anyhow!("Coordinates cannot be negative: ({}, {})", x, y));
+    }
+    if x > MAX_SAFE_JS_INTEGER || y > MAX_SAFE_JS_INTEGER {
+        return Err(anyhow::anyhow!(
+            "Coordinates ({}, {}) exceed JavaScript safe integer limit",
+            x, y
+        ));
     }
     if x as u32 > width * 2 || y as u32 > height * 2 {
         return Err(anyhow::anyhow!(
@@ -70,6 +91,39 @@ fn validate_coordinates(x: i64, y: i64, width: u32, height: u32) -> Result<()> {
         ));
     }
     Ok(())
+}
+
+/// Validate that a key name is safe for use in JavaScript.
+/// Only allows alphanumeric characters, common key names, and function keys.
+fn validate_key_name(key: &str) -> Result<()> {
+    // List of valid key names (case-insensitive)
+    let valid_keys = [
+        "backspace", "tab", "return", "enter", "shift", "control", "ctrl",
+        "alt", "escape", "esc", "space", "pageup", "pagedown", "end", "home",
+        "left", "arrowleft", "up", "arrowup", "right", "arrowright", "down",
+        "arrowdown", "insert", "delete", "command", "meta",
+        "f1", "f2", "f3", "f4", "f5", "f6", "f7", "f8", "f9", "f10", "f11", "f12",
+    ];
+    
+    let lower = key.to_lowercase();
+    
+    // Check if it's a known key name
+    if valid_keys.contains(&lower.as_str()) {
+        return Ok(());
+    }
+    
+    // Allow single printable ASCII characters (letters, numbers, symbols)
+    if key.len() == 1 {
+        let c = key.chars().next().unwrap();
+        if c.is_ascii_alphanumeric() || c.is_ascii_punctuation() {
+            return Ok(());
+        }
+    }
+    
+    Err(anyhow::anyhow!(
+        "Invalid key name '{}'. Only known key names and single printable characters are allowed.",
+        key
+    ))
 }
 
 /// Browser controller that wraps WebDriver operations.
@@ -159,7 +213,7 @@ impl BrowserController {
             .ok_or_else(|| anyhow::anyhow!("Browser not opened"))?;
 
         // Wait a bit for page to settle
-        tokio::time::sleep(Duration::from_millis(500)).await;
+        tokio::time::sleep(Duration::from_millis(PAGE_SETTLE_DELAY_MS)).await;
 
         let screenshot_bytes = driver.screenshot_as_png().await?;
         let screenshot = BASE64.encode(&screenshot_bytes);
@@ -200,7 +254,7 @@ impl BrowserController {
         driver.execute(&script, vec![]).await?;
 
         // Wait for potential navigation
-        tokio::time::sleep(Duration::from_millis(500)).await;
+        tokio::time::sleep(Duration::from_millis(PAGE_SETTLE_DELAY_MS)).await;
 
         drop(driver_guard);
         self.current_state().await
@@ -267,7 +321,7 @@ impl BrowserController {
             x, y
         );
         driver.execute(&click_script, vec![]).await?;
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        tokio::time::sleep(Duration::from_millis(TYPING_DELAY_MS)).await;
 
         // Find active element and interact with it
         let active_element = driver.active_element().await?;
@@ -285,7 +339,7 @@ impl BrowserController {
             active_element.send_keys(Key::Enter).await?;
         }
 
-        tokio::time::sleep(Duration::from_millis(500)).await;
+        tokio::time::sleep(Duration::from_millis(PAGE_SETTLE_DELAY_MS)).await;
 
         drop(driver_guard);
         self.current_state().await
@@ -373,7 +427,7 @@ impl BrowserController {
             .ok_or_else(|| anyhow::anyhow!("Browser not opened"))?;
 
         driver.back().await?;
-        tokio::time::sleep(Duration::from_millis(500)).await;
+        tokio::time::sleep(Duration::from_millis(PAGE_SETTLE_DELAY_MS)).await;
 
         drop(driver_guard);
         self.current_state().await
@@ -388,7 +442,7 @@ impl BrowserController {
             .ok_or_else(|| anyhow::anyhow!("Browser not opened"))?;
 
         driver.forward().await?;
-        tokio::time::sleep(Duration::from_millis(500)).await;
+        tokio::time::sleep(Duration::from_millis(PAGE_SETTLE_DELAY_MS)).await;
 
         drop(driver_guard);
         self.current_state().await
@@ -415,7 +469,7 @@ impl BrowserController {
         };
 
         driver.goto(&normalized_url).await?;
-        tokio::time::sleep(Duration::from_millis(500)).await;
+        tokio::time::sleep(Duration::from_millis(PAGE_SETTLE_DELAY_MS)).await;
 
         drop(driver_guard);
         self.current_state().await
@@ -424,14 +478,20 @@ impl BrowserController {
     /// Press key combination.
     pub async fn key_combination(&self, keys: Vec<String>) -> Result<EnvState> {
         debug!("Pressing key combination: {:?}", keys);
+        
+        if keys.is_empty() {
+            return Err(anyhow::anyhow!("No keys provided"));
+        }
+
+        // Validate all keys before proceeding
+        for key in &keys {
+            validate_key_name(key)?;
+        }
+
         let driver_guard = self.driver.lock().await;
         let driver = driver_guard
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("Browser not opened"))?;
-
-        if keys.is_empty() {
-            return Err(anyhow::anyhow!("No keys provided"));
-        }
 
         // Build the key sequence using JavaScript
         let mut key_codes = Vec::new();
@@ -460,6 +520,7 @@ impl BrowserController {
             });
 
             if let Some(key) = main_key {
+                // Key has been validated above, safe to use in JavaScript
                 let script = format!(
                     r#"
                     var event = new KeyboardEvent('keydown', {{
@@ -568,5 +629,21 @@ impl BrowserController {
     /// Get the screen size.
     pub fn screen_size(&self) -> (u32, u32) {
         (self.config.screen_width, self.config.screen_height)
+    }
+}
+
+impl Drop for BrowserController {
+    fn drop(&mut self) {
+        // Try to close the WebDriver session if it's still open
+        // Note: This uses a blocking approach since Drop is not async
+        if let Ok(guard) = self.driver.try_lock() {
+            if guard.is_some() {
+                warn!(
+                    "BrowserController dropped without calling close(). \
+                    WebDriver session may not be properly cleaned up. \
+                    Consider calling close() explicitly before dropping."
+                );
+            }
+        }
     }
 }

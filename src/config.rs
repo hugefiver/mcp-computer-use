@@ -99,11 +99,23 @@ impl Config {
         }
 
         if let Ok(width) = std::env::var("MCP_SCREEN_WIDTH") {
-            config.screen_width = width.parse().unwrap_or(1280);
+            config.screen_width = match width.parse() {
+                Ok(w) => w,
+                Err(e) => {
+                    tracing::warn!("Invalid MCP_SCREEN_WIDTH '{}': {}, using default 1280", width, e);
+                    1280
+                }
+            };
         }
 
         if let Ok(height) = std::env::var("MCP_SCREEN_HEIGHT") {
-            config.screen_height = height.parse().unwrap_or(720);
+            config.screen_height = match height.parse() {
+                Ok(h) => h,
+                Err(e) => {
+                    tracing::warn!("Invalid MCP_SCREEN_HEIGHT '{}': {}, using default 720", height, e);
+                    720
+                }
+            };
         }
 
         if let Ok(url) = std::env::var("MCP_INITIAL_URL") {
@@ -115,7 +127,13 @@ impl Config {
         }
 
         if let Ok(headless) = std::env::var("MCP_HEADLESS") {
-            config.headless = headless.parse().unwrap_or(true);
+            config.headless = match headless.parse() {
+                Ok(h) => h,
+                Err(e) => {
+                    tracing::warn!("Invalid MCP_HEADLESS '{}': {}, using default true", headless, e);
+                    true
+                }
+            };
         }
 
         if let Ok(disabled) = std::env::var("MCP_DISABLED_TOOLS") {
@@ -127,7 +145,22 @@ impl Config {
         }
 
         if let Ok(highlight) = std::env::var("MCP_HIGHLIGHT_MOUSE") {
-            config.highlight_mouse = highlight.parse().unwrap_or(false);
+            config.highlight_mouse = match highlight.parse() {
+                Ok(h) => h,
+                Err(e) => {
+                    tracing::warn!("Invalid MCP_HIGHLIGHT_MOUSE '{}': {}, using default false", highlight, e);
+                    false
+                }
+            };
+        }
+
+        // Validate browser type - only Chrome is currently supported
+        if config.browser_type != BrowserType::Chrome {
+            panic!(
+                "Only Chrome browser is currently supported. Got: {:?}. \
+                Please set MCP_BROWSER_TYPE=chrome or remove the environment variable.",
+                config.browser_type
+            );
         }
 
         Ok(config)
