@@ -6,6 +6,7 @@ use crate::config::Config;
 use anyhow::Result;
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use thirtyfour::prelude::*;
 use tokio::sync::Mutex;
@@ -93,22 +94,22 @@ fn validate_coordinates(x: i64, y: i64, width: u32, height: u32) -> Result<()> {
     Ok(())
 }
 
+/// Valid key names for keyboard input (case-insensitive).
+static VALID_KEY_NAMES: &[&str] = &[
+    "backspace", "tab", "return", "enter", "shift", "control", "ctrl",
+    "alt", "escape", "esc", "space", "pageup", "pagedown", "end", "home",
+    "left", "arrowleft", "up", "arrowup", "right", "arrowright", "down",
+    "arrowdown", "insert", "delete", "command", "meta",
+    "f1", "f2", "f3", "f4", "f5", "f6", "f7", "f8", "f9", "f10", "f11", "f12",
+];
+
 /// Validate that a key name is safe for use in JavaScript.
 /// Only allows alphanumeric characters, common key names, and function keys.
 fn validate_key_name(key: &str) -> Result<()> {
-    // List of valid key names (case-insensitive)
-    let valid_keys = [
-        "backspace", "tab", "return", "enter", "shift", "control", "ctrl",
-        "alt", "escape", "esc", "space", "pageup", "pagedown", "end", "home",
-        "left", "arrowleft", "up", "arrowup", "right", "arrowright", "down",
-        "arrowdown", "insert", "delete", "command", "meta",
-        "f1", "f2", "f3", "f4", "f5", "f6", "f7", "f8", "f9", "f10", "f11", "f12",
-    ];
-    
     let lower = key.to_lowercase();
     
     // Check if it's a known key name
-    if valid_keys.contains(&lower.as_str()) {
+    if VALID_KEY_NAMES.contains(&lower.as_str()) {
         return Ok(());
     }
     
@@ -130,6 +131,10 @@ fn validate_key_name(key: &str) -> Result<()> {
 pub struct BrowserController {
     driver: Arc<Mutex<Option<WebDriver>>>,
     config: Config,
+    /// Tracks whether the browser was opened (and thus needs cleanup)
+    was_opened: AtomicBool,
+    /// Tracks whether close() was called
+    was_closed: AtomicBool,
 }
 
 impl BrowserController {
@@ -138,6 +143,8 @@ impl BrowserController {
         Self {
             driver: Arc::new(Mutex::new(None)),
             config,
+            was_opened: AtomicBool::new(false),
+            was_closed: AtomicBool::new(false),
         }
     }
 
@@ -189,6 +196,7 @@ impl BrowserController {
         driver.goto(&self.config.initial_url).await?;
 
         *driver_guard = Some(driver);
+        self.was_opened.store(true, Ordering::SeqCst);
         drop(driver_guard);
 
         info!("Browser opened successfully");
@@ -200,6 +208,7 @@ impl BrowserController {
         let mut driver_guard = self.driver.lock().await;
         if let Some(driver) = driver_guard.take() {
             driver.quit().await?;
+            self.was_closed.store(true, Ordering::SeqCst);
             info!("Browser closed");
         }
         Ok(())
@@ -634,16 +643,17 @@ impl BrowserController {
 
 impl Drop for BrowserController {
     fn drop(&mut self) {
-        // Try to close the WebDriver session if it's still open
-        // Note: This uses a blocking approach since Drop is not async
-        if let Ok(guard) = self.driver.try_lock() {
-            if guard.is_some() {
-                warn!(
-                    "BrowserController dropped without calling close(). \
-                    WebDriver session may not be properly cleaned up. \
-                    Consider calling close() explicitly before dropping."
-                );
-            }
+        // Use atomic flags to reliably detect if cleanup is needed
+        // This is more reliable than try_lock() which may fail silently
+        let was_opened = self.was_opened.load(Ordering::SeqCst);
+        let was_closed = self.was_closed.load(Ordering::SeqCst);
+        
+        if was_opened && !was_closed {
+            warn!(
+                "BrowserController dropped without calling close(). \
+                WebDriver session may not be properly cleaned up. \
+                Consider calling close() explicitly before dropping."
+            );
         }
     }
 }
