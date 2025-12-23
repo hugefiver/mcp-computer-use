@@ -58,6 +58,20 @@ pub struct EnvState {
     pub url: String,
 }
 
+/// Validate coordinates are within reasonable screen bounds.
+fn validate_coordinates(x: i64, y: i64, width: u32, height: u32) -> Result<()> {
+    if x < 0 || y < 0 {
+        return Err(anyhow::anyhow!("Coordinates cannot be negative: ({}, {})", x, y));
+    }
+    if x as u32 > width * 2 || y as u32 > height * 2 {
+        return Err(anyhow::anyhow!(
+            "Coordinates ({}, {}) are too far outside screen bounds ({}x{})",
+            x, y, width, height
+        ));
+    }
+    Ok(())
+}
+
 /// Browser controller that wraps WebDriver operations.
 pub struct BrowserController {
     driver: Arc<Mutex<Option<WebDriver>>>,
@@ -156,6 +170,7 @@ impl BrowserController {
 
     /// Click at specific coordinates.
     pub async fn click_at(&self, x: i64, y: i64) -> Result<EnvState> {
+        validate_coordinates(x, y, self.config.screen_width, self.config.screen_height)?;
         debug!("Clicking at ({}, {})", x, y);
         let driver_guard = self.driver.lock().await;
         let driver = driver_guard
@@ -163,6 +178,7 @@ impl BrowserController {
             .ok_or_else(|| anyhow::anyhow!("Browser not opened"))?;
 
         // Use JavaScript to click at coordinates
+        // Note: x and y are i64, so format! only produces numeric values (no injection risk)
         let script = format!(
             r#"
             var element = document.elementFromPoint({}, {});
@@ -192,6 +208,7 @@ impl BrowserController {
 
     /// Hover at specific coordinates.
     pub async fn hover_at(&self, x: i64, y: i64) -> Result<EnvState> {
+        validate_coordinates(x, y, self.config.screen_width, self.config.screen_height)?;
         debug!("Hovering at ({}, {})", x, y);
         let driver_guard = self.driver.lock().await;
         let driver = driver_guard
@@ -230,6 +247,7 @@ impl BrowserController {
         press_enter: bool,
         clear_before_typing: bool,
     ) -> Result<EnvState> {
+        validate_coordinates(x, y, self.config.screen_width, self.config.screen_height)?;
         debug!("Typing at ({}, {}): {}", x, y, text);
         let driver_guard = self.driver.lock().await;
         let driver = driver_guard
@@ -237,6 +255,7 @@ impl BrowserController {
             .ok_or_else(|| anyhow::anyhow!("Browser not opened"))?;
 
         // Click at the position first
+        // Note: x and y are i64, so format! only produces numeric values (no injection risk)
         let click_script = format!(
             r#"
             var element = document.elementFromPoint({}, {});
@@ -302,6 +321,7 @@ impl BrowserController {
         direction: &str,
         magnitude: i64,
     ) -> Result<EnvState> {
+        validate_coordinates(x, y, self.config.screen_width, self.config.screen_height)?;
         debug!(
             "Scrolling at ({}, {}) direction: {} magnitude: {}",
             x, y, direction, magnitude
@@ -474,6 +494,8 @@ impl BrowserController {
         destination_x: i64,
         destination_y: i64,
     ) -> Result<EnvState> {
+        validate_coordinates(x, y, self.config.screen_width, self.config.screen_height)?;
+        validate_coordinates(destination_x, destination_y, self.config.screen_width, self.config.screen_height)?;
         debug!(
             "Drag and drop from ({}, {}) to ({}, {})",
             x, y, destination_x, destination_y
@@ -484,6 +506,7 @@ impl BrowserController {
             .ok_or_else(|| anyhow::anyhow!("Browser not opened"))?;
 
         // Use JavaScript to simulate drag and drop
+        // Note: All coordinates are i64, so format! only produces numeric values (no injection risk)
         let script = format!(
             r#"
             function simulateDragDrop(startX, startY, endX, endY) {{
@@ -545,11 +568,5 @@ impl BrowserController {
     /// Get the screen size.
     pub fn screen_size(&self) -> (u32, u32) {
         (self.config.screen_width, self.config.screen_height)
-    }
-}
-
-impl Drop for BrowserController {
-    fn drop(&mut self) {
-        // Note: async cleanup would need to be handled elsewhere
     }
 }

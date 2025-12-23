@@ -28,29 +28,38 @@ pub struct BrowserStateResponse {
 }
 
 fn env_state_to_result(state: EnvState, message: Option<&str>) -> Result<CallToolResult, McpError> {
-    let text_content = Content::text(
-        serde_json::to_string_pretty(&BrowserStateResponse {
-            url: state.url,
-            success: true,
-            message: message.map(String::from),
-        })
-        .unwrap_or_default(),
-    );
-
+    let response = BrowserStateResponse {
+        url: state.url,
+        success: true,
+        message: message.map(String::from),
+    };
+    let text = match serde_json::to_string_pretty(&response) {
+        Ok(t) => t,
+        Err(e) => {
+            tracing::warn!("Failed to serialize response: {}", e);
+            format!("{{\"url\": \"{}\", \"success\": true}}", response.url)
+        }
+    };
+    let text_content = Content::text(text);
     let image_content = Content::image(state.screenshot, "image/png");
 
     Ok(CallToolResult::success(vec![text_content, image_content]))
 }
 
 fn error_to_result(error: &str) -> Result<CallToolResult, McpError> {
-    Ok(CallToolResult::error(vec![Content::text(
-        serde_json::to_string_pretty(&BrowserStateResponse {
-            url: String::new(),
-            success: false,
-            message: Some(error.to_string()),
-        })
-        .unwrap_or_default(),
-    )]))
+    let response = BrowserStateResponse {
+        url: String::new(),
+        success: false,
+        message: Some(error.to_string()),
+    };
+    let text = match serde_json::to_string_pretty(&response) {
+        Ok(t) => t,
+        Err(e) => {
+            tracing::warn!("Failed to serialize error response: {}", e);
+            format!("{{\"success\": false, \"message\": \"{}\"}}", error.replace('"', "\\\""))
+        }
+    };
+    Ok(CallToolResult::error(vec![Content::text(text)]))
 }
 
 /// MCP Server handler for browser control.
