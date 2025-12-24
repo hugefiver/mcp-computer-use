@@ -5,9 +5,16 @@
 
 use crate::config::Config;
 use anyhow::{Context, Result};
+use std::net::TcpStream;
 use std::process::{Child, Command};
 use std::time::Duration;
 use tracing::{debug, info, warn};
+
+/// Maximum time to wait for driver to become ready (in seconds).
+const DRIVER_READY_TIMEOUT_SECS: u64 = 30;
+
+/// Interval between health checks (in milliseconds).
+const HEALTH_CHECK_INTERVAL_MS: u64 = 100;
 
 /// Manages the lifecycle of a browser driver process.
 pub struct DriverManager {
@@ -24,8 +31,13 @@ impl DriverManager {
         }
     }
 
-    /// Start the browser driver based on configuration.
-    pub fn start(&mut self, config: &Config) -> Result<String> {
+    /// Ensure a browser driver is ready for use.
+    ///
+    /// If `auto_launch_driver` is enabled in config, this will launch a new driver
+    /// and wait for it to become ready. Otherwise, it returns the existing webdriver URL.
+    ///
+    /// Returns the URL of the ready driver.
+    pub fn ensure_driver_ready(&mut self, config: &Config) -> Result<String> {
         if !config.auto_launch_driver {
             debug!("Auto-launch driver is disabled, using existing webdriver URL");
             return Ok(config.webdriver_url.clone());
@@ -48,12 +60,49 @@ impl DriverManager {
 
         self.process = Some(child);
 
-        // Wait a bit for the driver to start
-        std::thread::sleep(Duration::from_millis(500));
-
         let url = format!("http://localhost:{}", self.port);
-        info!("Browser driver started at {}", url);
+
+        // Wait for the driver to become ready by checking if the port is accepting connections
+        self.wait_for_driver_ready()?;
+
+        info!("Browser driver started and ready at {}", url);
         Ok(url)
+    }
+
+    /// Wait for the driver to become ready by attempting to connect to its port.
+    fn wait_for_driver_ready(&self) -> Result<()> {
+        let start = std::time::Instant::now();
+        let timeout = Duration::from_secs(DRIVER_READY_TIMEOUT_SECS);
+        let addr = format!("127.0.0.1:{}", self.port);
+
+        debug!("Waiting for driver to become ready on port {}", self.port);
+
+        while start.elapsed() < timeout {
+            // Try to connect to the driver's port
+            match TcpStream::connect_timeout(
+                &addr.parse().unwrap(),
+                Duration::from_millis(HEALTH_CHECK_INTERVAL_MS),
+            ) {
+                Ok(_) => {
+                    debug!("Driver ready after {:?}", start.elapsed());
+                    return Ok(());
+                }
+                Err(_) => {
+                    // Check if the process is still alive
+                    if let Some(ref mut child) = self.process.as_ref() {
+                        // We can't easily check if process is running without try_wait
+                        // which requires mutable reference, so just continue waiting
+                        let _ = child;
+                    }
+                    std::thread::sleep(Duration::from_millis(HEALTH_CHECK_INTERVAL_MS));
+                }
+            }
+        }
+
+        Err(anyhow::anyhow!(
+            "Driver failed to become ready within {} seconds",
+            DRIVER_READY_TIMEOUT_SECS
+        ))
     }
 
     /// Find the driver executable.

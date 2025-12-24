@@ -88,14 +88,21 @@ fn disabled_tool_error(tool_name: &str) -> Result<CallToolResult, McpError> {
 #[derive(Clone)]
 pub struct BrowserMcpServer {
     browser: Arc<BrowserController>,
-    config: Config,
+    config: Arc<Config>,
     tool_router: ToolRouter<Self>,
 }
 
 impl BrowserMcpServer {
     /// Create a new MCP server with the given configuration.
     pub fn new(config: Config) -> Self {
-        let browser = Arc::new(BrowserController::new(config.clone()));
+        let config = Arc::new(config);
+        Self::new_with_config(config)
+    }
+
+    /// Create a new MCP server with an Arc-wrapped configuration.
+    /// This avoids cloning the config for each session in HTTP mode.
+    pub fn new_with_config(config: Arc<Config>) -> Self {
+        let browser = Arc::new(BrowserController::new((*config).clone()));
         Self {
             browser,
             config,
@@ -209,14 +216,47 @@ pub struct CloseTabParams {
     pub handle: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+/// Parameters for switching to a tab.
+/// Exactly one of `handle` or `index` must be provided.
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
 pub struct SwitchTabParams {
     /// The window handle of the tab to switch to.
+    /// Exactly one of `handle` or `index` must be provided.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub handle: Option<String>,
     /// The index of the tab to switch to (0-based).
+    /// Exactly one of `handle` or `index` must be provided.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub index: Option<usize>,
+}
+
+// Custom deserialization to enforce that exactly one of `handle` or `index` is provided.
+impl<'de> serde::Deserialize<'de> for SwitchTabParams {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct RawSwitchTabParams {
+            handle: Option<String>,
+            index: Option<usize>,
+        }
+
+        let raw = RawSwitchTabParams::deserialize(deserializer)?;
+
+        match (&raw.handle, &raw.index) {
+            (Some(_), Some(_)) => Err(serde::de::Error::custom(
+                "Provide exactly one of 'handle' or 'index', not both",
+            )),
+            (None, None) => Err(serde::de::Error::custom(
+                "Provide either 'handle' or 'index'",
+            )),
+            _ => Ok(SwitchTabParams {
+                handle: raw.handle,
+                index: raw.index,
+            }),
+        }
+    }
 }
 
 /// Response type for tab list operation.
@@ -535,7 +575,7 @@ impl BrowserMcpServer {
 
     /// Creates a new browser tab.
     #[tool(
-        description = "Creates a new browser tab. Optionally navigates to a URL in the new tab. Returns information about the new tab."
+        description = "Creates a new browser tab. Optionally navigates to a URL in the new tab. Returns information about the new tab and a screenshot."
     )]
     async fn new_tab(
         &self,
@@ -546,7 +586,7 @@ impl BrowserMcpServer {
         }
         info!("Creating new tab with URL: {:?}", params.url);
         match self.browser.new_tab(params.url.as_deref()).await {
-            Ok(tab_info) => {
+            Ok((tab_info, state)) => {
                 let response = NewTabResponse {
                     tab: tab_info,
                     success: true,
@@ -554,7 +594,9 @@ impl BrowserMcpServer {
                 };
                 let text = serde_json::to_string_pretty(&response)
                     .unwrap_or_else(|_| r#"{"success":true}"#.to_string());
-                Ok(CallToolResult::success(vec![Content::text(text)]))
+                let text_content = Content::text(text);
+                let image_content = Content::image(state.screenshot, "image/png");
+                Ok(CallToolResult::success(vec![text_content, image_content]))
             }
             Err(e) => error_to_result(&format!("Failed to create new tab: {}", e)),
         }
@@ -578,7 +620,7 @@ impl BrowserMcpServer {
 
     /// Switches to a different browser tab.
     #[tool(
-        description = "Switches to a different browser tab by handle or index. Provide either 'handle' (window handle string) or 'index' (0-based tab index)."
+        description = "Switches to a different browser tab by handle or index. Provide exactly one of 'handle' (window handle string) or 'index' (0-based tab index)."
     )]
     async fn switch_tab(
         &self,
@@ -603,7 +645,7 @@ impl BrowserMcpServer {
 
     /// Lists all open browser tabs.
     #[tool(
-        description = "Lists all open browser tabs with their handles, URLs, titles, and active status."
+        description = "Lists all open browser tabs with their handles, URLs, titles, and active status. Also returns a screenshot of the current tab."
     )]
     async fn list_tabs(&self) -> Result<CallToolResult, McpError> {
         if self.config.is_tool_disabled(tool_names::LIST_TABS) {
@@ -611,7 +653,7 @@ impl BrowserMcpServer {
         }
         info!("Listing all tabs");
         match self.browser.list_tabs().await {
-            Ok(tabs) => {
+            Ok((tabs, state)) => {
                 let response = TabListResponse {
                     tabs,
                     success: true,
@@ -619,7 +661,9 @@ impl BrowserMcpServer {
                 };
                 let text = serde_json::to_string_pretty(&response)
                     .unwrap_or_else(|_| r#"{"success":true,"tabs":[]}"#.to_string());
-                Ok(CallToolResult::success(vec![Content::text(text)]))
+                let text_content = Content::text(text);
+                let image_content = Content::image(state.screenshot, "image/png");
+                Ok(CallToolResult::success(vec![text_content, image_content]))
             }
             Err(e) => error_to_result(&format!("Failed to list tabs: {}", e)),
         }

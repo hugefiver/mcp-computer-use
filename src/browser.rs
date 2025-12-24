@@ -10,6 +10,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use thirtyfour::common::capabilities::chromium::ChromiumLikeCapabilities;
+use thirtyfour::extensions::cdp::ChromeDevTools;
 use thirtyfour::prelude::*;
 use thirtyfour::WindowHandle;
 use tokio::sync::Mutex;
@@ -93,6 +94,9 @@ pub struct TabInfo {
     pub title: String,
     /// Whether this tab is currently active.
     pub active: bool,
+    /// Navigation error if URL navigation failed (only set on new_tab).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub navigation_error: Option<String>,
 }
 
 /// Validate coordinates are within reasonable screen bounds and safe for JavaScript.
@@ -296,8 +300,8 @@ impl BrowserController {
         let driver = WebDriver::new(&self.config.webdriver_url, caps).await?;
 
         // Apply additional stealth scripts if undetected mode is enabled
+        // Use CDP's Page.addScriptToEvaluateOnNewDocument to ensure script runs on every page
         if self.config.undetected {
-            // Remove navigator.webdriver property
             let stealth_script = r#"
                 Object.defineProperty(navigator, 'webdriver', {
                     get: () => undefined
@@ -334,6 +338,17 @@ impl BrowserController {
                     get: () => ['en-US', 'en']
                 });
             "#;
+
+            // Use CDP to add script that runs on every new document
+            let dev_tools = ChromeDevTools::new(driver.handle.clone());
+            let cdp_cmd = serde_json::json!({
+                "source": stealth_script
+            });
+            let _ = dev_tools
+                .execute_cdp_with_params("Page.addScriptToEvaluateOnNewDocument", cdp_cmd)
+                .await;
+
+            // Also execute immediately for the current page
             driver.execute(stealth_script, vec![]).await?;
         }
 
@@ -797,7 +812,9 @@ impl BrowserController {
     // ========== Tab Management Methods ==========
 
     /// Create a new browser tab and optionally navigate to a URL.
-    pub async fn new_tab(&self, url: Option<&str>) -> Result<TabInfo> {
+    /// Create a new browser tab and optionally navigate to a URL.
+    /// Returns both tab info and the current environment state.
+    pub async fn new_tab(&self, url: Option<&str>) -> Result<(TabInfo, EnvState)> {
         debug!("Creating new tab");
         let driver_guard = self.driver.lock().await;
         let driver = driver_guard
@@ -810,14 +827,19 @@ impl BrowserController {
         // Switch to the new tab
         driver.switch_to_window(new_handle.clone()).await?;
 
-        // Navigate to URL if provided
+        // Navigate to URL if provided, handling failures gracefully
+        let mut navigation_error: Option<String> = None;
         if let Some(url) = url {
             let normalized_url = if url.starts_with("http://") || url.starts_with("https://") {
                 url.to_string()
             } else {
                 format!("https://{}", url)
             };
-            driver.goto(&normalized_url).await?;
+            if let Err(e) = driver.goto(&normalized_url).await {
+                // Log the error but don't fail - tab is still created
+                warn!("Navigation failed in new tab: {}. Tab remains open.", e);
+                navigation_error = Some(format!("Navigation failed: {}", e));
+            }
         }
 
         tokio::time::sleep(Duration::from_millis(PAGE_SETTLE_DELAY_MS)).await;
@@ -825,12 +847,24 @@ impl BrowserController {
         let current_url = driver.current_url().await?.to_string();
         let title = driver.title().await.unwrap_or_default();
 
-        Ok(TabInfo {
+        let tab_info = TabInfo {
             handle: new_handle.to_string(),
-            url: current_url,
+            url: current_url.clone(),
             title,
             active: true,
-        })
+            navigation_error,
+        };
+
+        // Get screenshot for the state
+        let screenshot_bytes = driver.screenshot_as_png().await?;
+        let screenshot = BASE64.encode(&screenshot_bytes);
+
+        let state = EnvState {
+            screenshot,
+            url: current_url,
+        };
+
+        Ok((tab_info, state))
     }
 
     /// Close a browser tab by handle.
@@ -850,9 +884,7 @@ impl BrowserController {
         // Determine which window to switch to (if any) before closing.
         let windows = driver.windows().await?;
         let current = driver.window().await.ok();
-        let next_window = windows
-            .into_iter()
-            .find(|w| Some(w) != current.as_ref());
+        let next_window = windows.into_iter().find(|w| Some(w) != current.as_ref());
 
         // Close current window
         driver.close_window().await?;
@@ -867,8 +899,23 @@ impl BrowserController {
     }
 
     /// Switch to a tab by handle or index.
+    /// Exactly one of handle or index must be provided.
     pub async fn switch_tab(&self, handle: Option<&str>, index: Option<usize>) -> Result<EnvState> {
         debug!("Switching to tab: handle={:?}, index={:?}", handle, index);
+
+        // Validate that exactly one of handle or index is provided
+        match (&handle, &index) {
+            (Some(_), Some(_)) => {
+                return Err(anyhow::anyhow!(
+                    "Provide exactly one of 'handle' or 'index', not both"
+                ));
+            }
+            (None, None) => {
+                return Err(anyhow::anyhow!("Either handle or index must be provided"));
+            }
+            _ => {}
+        }
+
         let driver_guard = self.driver.lock().await;
         let driver = driver_guard
             .as_ref()
@@ -884,8 +931,6 @@ impl BrowserController {
                 .nth(index)
                 .ok_or_else(|| anyhow::anyhow!("Tab index {} out of range", index))?;
             driver.switch_to_window(window).await?;
-        } else {
-            return Err(anyhow::anyhow!("Either handle or index must be provided"));
         }
 
         tokio::time::sleep(Duration::from_millis(PAGE_SETTLE_DELAY_MS)).await;
@@ -894,8 +939,8 @@ impl BrowserController {
         self.current_state().await
     }
 
-    /// List all open tabs.
-    pub async fn list_tabs(&self) -> Result<Vec<TabInfo>> {
+    /// List all open tabs and return current state.
+    pub async fn list_tabs(&self) -> Result<(Vec<TabInfo>, EnvState)> {
         debug!("Listing all tabs");
         let driver_guard = self.driver.lock().await;
         let driver = driver_guard
@@ -920,6 +965,7 @@ impl BrowserController {
                     url,
                     title,
                     active: is_active,
+                    navigation_error: None,
                 });
             }
 
@@ -933,7 +979,16 @@ impl BrowserController {
             warn!("Failed to switch back to original tab: {:?}", e);
         }
 
-        result
+        let tabs = result?;
+
+        // Get current state (screenshot and URL)
+        let screenshot_bytes = driver.screenshot_as_png().await?;
+        let screenshot = BASE64.encode(&screenshot_bytes);
+        let url = driver.current_url().await?.to_string();
+
+        let state = EnvState { screenshot, url };
+
+        Ok((tabs, state))
     }
 
     /// Get the screen size.

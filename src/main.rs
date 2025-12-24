@@ -42,7 +42,7 @@ use crate::driver::DriverManager;
 use crate::tools::BrowserMcpServer;
 use rmcp::transport::stdio;
 use rmcp::ServiceExt;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
 #[cfg(feature = "http-server")]
@@ -67,21 +67,21 @@ async fn main() -> anyhow::Result<()> {
     let mut config = Config::load()?;
     info!("Configuration loaded: {:?}", config);
 
-    // Start driver manager if auto-launch is enabled
+    // Ensure driver is ready (launches if auto_launch_driver is enabled)
     let mut driver_manager = DriverManager::new();
-    if config.auto_launch_driver {
-        match driver_manager.start(&config) {
-            Ok(url) => {
+    match driver_manager.ensure_driver_ready(&config) {
+        Ok(url) => {
+            if config.auto_launch_driver {
                 info!(
                     "Browser driver auto-launched, updating webdriver URL to: {}",
                     url
                 );
-                config.webdriver_url = url;
             }
-            Err(e) => {
-                error!("Failed to auto-launch browser driver: {}", e);
-                return Err(e);
-            }
+            config.webdriver_url = url;
+        }
+        Err(e) => {
+            error!("Failed to ensure browser driver is ready: {}", e);
+            return Err(e);
         }
     }
 
@@ -134,13 +134,23 @@ async fn run_http_server(config: Config) -> anyhow::Result<()> {
     let bind_addr = format!("{}:{}", config.http_host, config.http_port);
     info!("Running MCP server on HTTP at {}...", bind_addr);
 
+    // Security warning for non-localhost bindings
+    if config.http_host != "127.0.0.1" && config.http_host != "localhost" {
+        warn!(
+            "⚠️  SECURITY WARNING: HTTP server is binding to '{}' which may expose the MCP endpoint \
+            to the network. The HTTP endpoint has NO authentication. Only bind to non-localhost \
+            addresses if you have proper security measures (TLS, authentication, firewall) in place.",
+            config.http_host
+        );
+    }
+
     let config = Arc::new(config);
 
     let service: StreamableHttpService<BrowserMcpServer, LocalSessionManager> =
         StreamableHttpService::new(
             {
                 let config = Arc::clone(&config);
-                move || Ok(BrowserMcpServer::new((*config).clone()))
+                move || Ok(BrowserMcpServer::new_with_config(Arc::clone(&config)))
             },
             Default::default(),
             StreamableHttpServerConfig {
