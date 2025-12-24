@@ -10,7 +10,7 @@
 //!
 //! - `MCP_BROWSER_BINARY_PATH`: Path to the browser binary
 //! - `MCP_WEBDRIVER_URL`: WebDriver server URL (default: http://localhost:9515)
-//! - `MCP_BROWSER_TYPE`: Browser type (chrome, firefox, edge, safari)
+//! - `MCP_BROWSER_TYPE`: Browser type (currently only `chrome` is supported)
 //! - `MCP_SCREEN_WIDTH`: Screen width in pixels (default: 1280)
 //! - `MCP_SCREEN_HEIGHT`: Screen height in pixels (default: 720)
 //! - `MCP_INITIAL_URL`: Initial URL to load (default: https://www.google.com)
