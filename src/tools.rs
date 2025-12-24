@@ -33,13 +33,14 @@ fn env_state_to_result(state: EnvState, message: Option<&str>) -> Result<CallToo
         success: true,
         message: message.map(String::from),
     };
-    let text = match serde_json::to_string_pretty(&response) {
-        Ok(t) => t,
-        Err(e) => {
+    let text = serde_json::to_string_pretty(&response)
+        .or_else(|_| serde_json::to_string(&response))
+        .unwrap_or_else(|e| {
             tracing::warn!("Failed to serialize response: {}", e);
-            format!("{{\"url\": \"{}\", \"success\": true}}", response.url)
-        }
-    };
+            // Fallback: construct minimal valid JSON with safely escaped URL
+            let safe_url = serde_json::to_string(&response.url).unwrap_or_else(|_| "null".to_string());
+            format!(r#"{{"url":{},"success":true}}"#, safe_url)
+        });
     let text_content = Content::text(text);
     let image_content = Content::image(state.screenshot, "image/png");
 
