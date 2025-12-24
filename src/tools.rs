@@ -215,7 +215,7 @@ impl BrowserMcpServer {
     #[tool(description = "Hovers at a specific x, y coordinate on the webpage. May be used to explore sub-menus that appear on hover.")]
     async fn hover_at(&self, Parameters(params): Parameters<HoverAtParams>) -> Result<CallToolResult, McpError> {
         if self.config.is_tool_disabled(tool_names::HOVER_AT) {
-            return error_to_result("Tool 'hover_at' is disabled");
+            return disabled_tool_error(tool_names::HOVER_AT);
         }
         info!("Hovering at ({}, {})", params.x, params.y);
         match self.browser.hover_at(params.x, params.y).await {
