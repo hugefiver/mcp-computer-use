@@ -303,9 +303,22 @@ impl BrowserController {
                     get: () => undefined
                 });
                 
-                // Override chrome property to hide automation
+                // Override plugins property to resemble a real browser
                 Object.defineProperty(navigator, 'plugins', {
-                    get: () => [1, 2, 3, 4, 5]
+                    get: () => ([
+                        {
+                            name: 'Chrome PDF Plugin',
+                            filename: 'internal-pdf-viewer',
+                            description: 'Portable Document Format',
+                            length: 1
+                        },
+                        {
+                            name: 'Chrome PDF Viewer',
+                            filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai',
+                            description: '',
+                            length: 1
+                        }
+                    ])
                 });
                 
                 // Override permissions query
@@ -834,22 +847,19 @@ impl BrowserController {
             driver.switch_to_window(window_handle).await?;
         }
 
-        // Get all windows before closing
+        // Determine which window to switch to (if any) before closing.
         let windows = driver.windows().await?;
+        let current = driver.window().await.ok();
+        let next_window = windows
+            .into_iter()
+            .find(|w| Some(w) != current.as_ref());
 
         // Close current window
         driver.close_window().await?;
 
-        // If there are other windows, switch to the first one
-        let remaining_windows: Vec<_> = windows.into_iter().collect();
-        if remaining_windows.len() > 1 {
-            let current = driver.window().await.ok();
-            if let Some(other) = remaining_windows
-                .into_iter()
-                .find(|w| Some(w) != current.as_ref())
-            {
-                driver.switch_to_window(other).await?;
-            }
+        // If there is another window, switch to it
+        if let Some(other) = next_window {
+            driver.switch_to_window(other).await?;
         }
 
         drop(driver_guard);
@@ -896,25 +906,34 @@ impl BrowserController {
         let windows = driver.windows().await?;
         let mut tabs = Vec::new();
 
-        for window in windows {
-            let is_active = window == current_handle;
-            driver.switch_to_window(window.clone()).await?;
+        // Perform the tab enumeration, capturing any error.
+        let result: Result<Vec<TabInfo>> = async {
+            for window in windows {
+                let is_active = window == current_handle;
+                driver.switch_to_window(window.clone()).await?;
 
-            let url = driver.current_url().await?.to_string();
-            let title = driver.title().await.unwrap_or_default();
+                let url = driver.current_url().await?.to_string();
+                let title = driver.title().await.unwrap_or_default();
 
-            tabs.push(TabInfo {
-                handle: window.to_string(),
-                url,
-                title,
-                active: is_active,
-            });
+                tabs.push(TabInfo {
+                    handle: window.to_string(),
+                    url,
+                    title,
+                    active: is_active,
+                });
+            }
+
+            Ok(tabs)
+        }
+        .await;
+
+        // Always attempt to switch back to the original tab,
+        // even if an error occurred during enumeration.
+        if let Err(e) = driver.switch_to_window(current_handle).await {
+            warn!("Failed to switch back to original tab: {:?}", e);
         }
 
-        // Switch back to the original tab
-        driver.switch_to_window(current_handle).await?;
-
-        Ok(tabs)
+        result
     }
 
     /// Get the screen size.

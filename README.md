@@ -96,6 +96,7 @@ MCP_HTTP_PORT=8080 \
 
 The HTTP server exposes an MCP endpoint at `/mcp`.
 
+> **Security note:** The HTTP endpoint does not provide authentication or encryption by default. Do not expose it directly to untrusted networks or the public internet. Bind it only to localhost (for example, `127.0.0.1`) unless you place it behind appropriate security protections such as TLS termination, authentication, and firewall rules.
 ### Auto-Launch Driver
 
 To automatically launch ChromeDriver:

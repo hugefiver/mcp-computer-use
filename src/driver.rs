@@ -42,7 +42,7 @@ impl DriverManager {
         let child = Command::new(&driver_path)
             .arg(format!("--port={}", self.port))
             .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
+            .stderr(std::process::Stdio::inherit())
             .spawn()
             .with_context(|| format!("Failed to start driver from {:?}", driver_path))?;
 

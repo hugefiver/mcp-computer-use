@@ -105,8 +105,8 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
-    // Driver manager will be cleaned up on drop
-    drop(driver_manager);
+    // DriverManager is cleaned up automatically when it goes out of scope
+    // (on any return path from this function, including errors).
 
     info!("MCP server shutting down");
     Ok(())
