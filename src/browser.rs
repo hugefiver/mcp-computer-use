@@ -22,6 +22,12 @@ const TYPING_DELAY_MS: u64 = 100;
 /// Coordinates beyond this could lose precision in JavaScript.
 const MAX_SAFE_JS_INTEGER: i64 = 9007199254740991;
 
+/// Maximum allowed scroll magnitude in pixels.
+const MAX_SCROLL_MAGNITUDE: i64 = 10000;
+
+/// Minimum allowed scroll magnitude in pixels.
+const MIN_SCROLL_MAGNITUDE: i64 = 0;
+
 /// Key mapping from user-friendly names to WebDriver key names.
 fn get_key_mapping(key: &str) -> &str {
     match key.to_lowercase().as_str() {
@@ -94,6 +100,23 @@ fn validate_coordinates(x: i64, y: i64, width: u32, height: u32) -> Result<()> {
     Ok(())
 }
 
+/// Validate scroll magnitude is within reasonable bounds.
+fn validate_magnitude(magnitude: i64) -> Result<()> {
+    if magnitude < MIN_SCROLL_MAGNITUDE {
+        return Err(anyhow::anyhow!(
+            "Scroll magnitude {} is below minimum allowed value {}",
+            magnitude, MIN_SCROLL_MAGNITUDE
+        ));
+    }
+    if magnitude > MAX_SCROLL_MAGNITUDE {
+        return Err(anyhow::anyhow!(
+            "Scroll magnitude {} exceeds maximum allowed value {}",
+            magnitude, MAX_SCROLL_MAGNITUDE
+        ));
+    }
+    Ok(())
+}
+
 /// Valid key names for keyboard input (case-insensitive).
 static VALID_KEY_NAMES: &[&str] = &[
     "backspace", "tab", "return", "enter", "shift", "control", "ctrl",
@@ -103,8 +126,17 @@ static VALID_KEY_NAMES: &[&str] = &[
     "f1", "f2", "f3", "f4", "f5", "f6", "f7", "f8", "f9", "f10", "f11", "f12",
 ];
 
+/// Safe single-character keys that can be used in JavaScript strings.
+/// Excludes backticks, quotes, and backslashes to prevent JavaScript injection.
+static SAFE_SINGLE_CHAR_KEYS: &[char] = &[
+    // Letters and numbers are handled separately via is_ascii_alphanumeric()
+    // Safe punctuation that won't break JavaScript strings
+    '!', '@', '#', '$', '%', '^', '&', '*', '(', ')', '-', '_', '=', '+',
+    '[', ']', '{', '}', ';', ':', ',', '.', '<', '>', '/', '?', '|', '~',
+];
+
 /// Validate that a key name is safe for use in JavaScript.
-/// Only allows alphanumeric characters, common key names, and function keys.
+/// Only allows alphanumeric characters, common key names, and safe single characters.
 fn validate_key_name(key: &str) -> Result<()> {
     let lower = key.to_lowercase();
     
@@ -113,10 +145,10 @@ fn validate_key_name(key: &str) -> Result<()> {
         return Ok(());
     }
     
-    // Allow single printable ASCII characters (letters, numbers, symbols)
+    // Allow single safe characters (letters, numbers, and safe punctuation)
     if key.len() == 1 {
         let c = key.chars().next().unwrap();
-        if c.is_ascii_alphanumeric() || c.is_ascii_punctuation() {
+        if c.is_ascii_alphanumeric() || SAFE_SINGLE_CHAR_KEYS.contains(&c) {
             return Ok(());
         }
     }
@@ -385,6 +417,7 @@ impl BrowserController {
         magnitude: i64,
     ) -> Result<EnvState> {
         validate_coordinates(x, y, self.config.screen_width, self.config.screen_height)?;
+        validate_magnitude(magnitude)?;
         debug!(
             "Scrolling at ({}, {}) direction: {} magnitude: {}",
             x, y, direction, magnitude
@@ -529,11 +562,13 @@ impl BrowserController {
             });
 
             if let Some(key) = main_key {
-                // Key has been validated above, safe to use in JavaScript
+                // Use JSON encoding for safe JavaScript string interpolation
+                let escaped_key = serde_json::to_string(&key.to_lowercase())
+                    .unwrap_or_else(|_| format!("\"{}\"", key.to_lowercase()));
                 let script = format!(
                     r#"
                     var event = new KeyboardEvent('keydown', {{
-                        key: '{}',
+                        key: {},
                         ctrlKey: {},
                         shiftKey: {},
                         altKey: {},
@@ -542,7 +577,7 @@ impl BrowserController {
                     }});
                     document.activeElement.dispatchEvent(event);
                     "#,
-                    key.to_lowercase(),
+                    escaped_key,
                     ctrl,
                     shift,
                     alt,

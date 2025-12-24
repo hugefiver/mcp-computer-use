@@ -202,7 +202,7 @@ impl BrowserMcpServer {
     #[tool(description = "Clicks at a specific x, y coordinate on the webpage. The coordinates are absolute values scaled to the screen dimensions.")]
     async fn click_at(&self, Parameters(params): Parameters<ClickAtParams>) -> Result<CallToolResult, McpError> {
         if self.config.is_tool_disabled(tool_names::CLICK_AT) {
-            return error_to_result("Tool 'click_at' is disabled");
+            return disabled_tool_error(tool_names::CLICK_AT);
         }
         info!("Clicking at ({}, {})", params.x, params.y);
         match self.browser.click_at(params.x, params.y).await {
@@ -293,7 +293,7 @@ impl BrowserMcpServer {
     #[tool(description = "Waits for 5 seconds to allow unfinished webpage processes to complete.")]
     async fn wait_5_seconds(&self) -> Result<CallToolResult, McpError> {
         if self.config.is_tool_disabled(tool_names::WAIT_5_SECONDS) {
-            return error_to_result("Tool 'wait_5_seconds' is disabled");
+            return disabled_tool_error(tool_names::WAIT_5_SECONDS);
         }
         info!("Waiting 5 seconds");
         match self.browser.wait_5_seconds().await {
@@ -306,7 +306,7 @@ impl BrowserMcpServer {
     #[tool(description = "Navigates back to the previous webpage in the browser history.")]
     async fn go_back(&self) -> Result<CallToolResult, McpError> {
         if self.config.is_tool_disabled(tool_names::GO_BACK) {
-            return error_to_result("Tool 'go_back' is disabled");
+            return disabled_tool_error(tool_names::GO_BACK);
         }
         info!("Going back");
         match self.browser.go_back().await {
@@ -319,7 +319,7 @@ impl BrowserMcpServer {
     #[tool(description = "Navigates forward to the next webpage in the browser history.")]
     async fn go_forward(&self) -> Result<CallToolResult, McpError> {
         if self.config.is_tool_disabled(tool_names::GO_FORWARD) {
-            return error_to_result("Tool 'go_forward' is disabled");
+            return disabled_tool_error(tool_names::GO_FORWARD);
         }
         info!("Going forward");
         match self.browser.go_forward().await {
@@ -358,7 +358,7 @@ impl BrowserMcpServer {
     #[tool(description = "Presses keyboard keys and combinations, such as ['Control', 'c'] or ['Enter']. Supports modifiers like Control, Shift, Alt, Meta/Command.")]
     async fn key_combination(&self, Parameters(params): Parameters<KeyCombinationParams>) -> Result<CallToolResult, McpError> {
         if self.config.is_tool_disabled(tool_names::KEY_COMBINATION) {
-            return error_to_result("Tool 'key_combination' is disabled");
+            return disabled_tool_error(tool_names::KEY_COMBINATION);
         }
         info!("Pressing key combination: {:?}", params.keys);
         match self.browser.key_combination(params.keys.clone()).await {
@@ -374,7 +374,7 @@ impl BrowserMcpServer {
     #[tool(description = "Drag and drop an element from a x, y coordinate to a destination_x, destination_y coordinate.")]
     async fn drag_and_drop(&self, Parameters(params): Parameters<DragAndDropParams>) -> Result<CallToolResult, McpError> {
         if self.config.is_tool_disabled(tool_names::DRAG_AND_DROP) {
-            return error_to_result("Tool 'drag_and_drop' is disabled");
+            return disabled_tool_error(tool_names::DRAG_AND_DROP);
         }
         info!(
             "Drag and drop from ({}, {}) to ({}, {})",
@@ -400,7 +400,7 @@ impl BrowserMcpServer {
     #[tool(description = "Returns the current state of the webpage including a screenshot and the current URL.")]
     async fn current_state(&self) -> Result<CallToolResult, McpError> {
         if self.config.is_tool_disabled(tool_names::CURRENT_STATE) {
-            return error_to_result("Tool 'current_state' is disabled");
+            return disabled_tool_error(tool_names::CURRENT_STATE);
         }
         info!("Getting current state");
         match self.browser.current_state().await {
