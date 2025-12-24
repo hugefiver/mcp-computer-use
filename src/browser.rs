@@ -31,6 +31,10 @@ const MAX_SCROLL_MAGNITUDE: i64 = 10000;
 /// Minimum allowed scroll magnitude in pixels.
 const MIN_SCROLL_MAGNITUDE: i64 = 0;
 
+/// Default user agent for undetected mode (realistic Chrome user agent).
+const UNDETECTED_USER_AGENT: &str =
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+
 /// Key mapping from user-friendly names to WebDriver key names.
 fn get_key_mapping(key: &str) -> &str {
     match key.to_lowercase().as_str() {
@@ -282,7 +286,7 @@ impl BrowserController {
             caps.add_arg("--disable-popup-blocking")?;
             caps.add_arg("--disable-notifications")?;
             // Set a realistic user agent
-            caps.add_arg("--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")?;
+            caps.add_arg(&format!("--user-agent={}", UNDETECTED_USER_AGENT))?;
         }
 
         if let Some(ref binary_path) = self.config.browser_binary_path {
