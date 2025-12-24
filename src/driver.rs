@@ -88,12 +88,8 @@ impl DriverManager {
                     return Ok(());
                 }
                 Err(_) => {
-                    // Check if the process is still alive
-                    if let Some(ref mut child) = self.process.as_ref() {
-                        // We can't easily check if process is running without try_wait
-                        // which requires mutable reference, so just continue waiting
-                        let _ = child;
-                    }
+                    // Continue waiting - checking process status would require try_wait
+                    // which needs mutable reference and adds complexity
                     std::thread::sleep(Duration::from_millis(HEALTH_CHECK_INTERVAL_MS));
                 }
             }
