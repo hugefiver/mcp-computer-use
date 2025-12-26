@@ -5,15 +5,19 @@ A Rust MCP (Model Context Protocol) server that provides browser control capabil
 ## Features
 
 - **Full Browser Control**: Click, hover, type, scroll, navigate, and more
+- **Tab Management**: Create, close, switch between, and list browser tabs
 - **Screenshot Capture**: Every action returns a screenshot for visual feedback
 - **Configurable**: Set browser binary path, WebDriver URL, screen size, and more
 - **Tool Filtering**: Disable specific tools as needed
 - **Cross-Browser Support**: Works with Chrome, Firefox, Edge, and Safari
+- **Multiple Transports**: Supports both stdio and HTTP streamable transports
+- **Auto-Launch Driver**: Optionally auto-start ChromeDriver
+- **Undetected Mode**: Stealth mode to help avoid bot detection (inspired by patchright)
 
 ## Prerequisites
 
 - Rust 1.70 or later
-- A WebDriver server running (e.g., ChromeDriver, GeckoDriver)
+- A WebDriver server running (e.g., ChromeDriver, GeckoDriver) or use auto-launch feature
 - The corresponding browser installed
 
 ### Installing ChromeDriver
@@ -57,11 +61,18 @@ The server can be configured using environment variables:
 | `MCP_HEADLESS` | Run browser in headless mode | `true` |
 | `MCP_DISABLED_TOOLS` | Comma-separated list of tools to disable | (empty) |
 | `MCP_HIGHLIGHT_MOUSE` | Highlight mouse position for debugging | `false` |
+| `MCP_TRANSPORT` | Transport mode: `stdio` or `http` | `stdio` |
+| `MCP_HTTP_HOST` | HTTP server host (when using http transport) | `127.0.0.1` |
+| `MCP_HTTP_PORT` | HTTP server port (when using http transport) | `8080` |
+| `MCP_AUTO_LAUNCH_DRIVER` | Automatically launch browser driver | `false` |
+| `MCP_DRIVER_PATH` | Path to browser driver executable | (auto-detect) |
+| `MCP_DRIVER_PORT` | Port for auto-launched driver | `9515` |
+| `MCP_UNDETECTED` | Enable undetected/stealth mode | `false` |
 
 ### Example Configuration
 
 ```bash
-# Start ChromeDriver first
+# Start ChromeDriver first (or use MCP_AUTO_LAUNCH_DRIVER=true)
 chromedriver --port=9515 &
 
 # Run the MCP server with custom configuration
@@ -72,9 +83,43 @@ MCP_SCREEN_HEIGHT=1080 \
 ./target/release/mcp-computer-use
 ```
 
+### HTTP Transport Mode
+
+To run the server with HTTP streamable transport instead of stdio:
+
+```bash
+MCP_TRANSPORT=http \
+MCP_HTTP_HOST=127.0.0.1 \
+MCP_HTTP_PORT=8080 \
+./target/release/mcp-computer-use
+```
+
+The HTTP server exposes an MCP endpoint at `/mcp`.
+
+> **Security note:** The HTTP endpoint does not provide authentication or encryption by default. Do not expose it directly to untrusted networks or the public internet. Bind it only to localhost (for example, `127.0.0.1`) unless you place it behind appropriate security protections such as TLS termination, authentication, and firewall rules.
+### Auto-Launch Driver
+
+To automatically launch ChromeDriver:
+
+```bash
+MCP_AUTO_LAUNCH_DRIVER=true \
+./target/release/mcp-computer-use
+```
+
+### Undetected Mode
+
+To enable stealth/undetected mode that helps avoid bot detection:
+
+```bash
+MCP_UNDETECTED=true \
+./target/release/mcp-computer-use
+```
+
+This mode applies various anti-detection techniques inspired by [patchright](https://github.com/Kaliiiiiiiiii-Vinyzu/patchright).
+
 ## Available Tools
 
-The server implements all Gemini computer use predefined tools:
+The server implements all Gemini computer use predefined tools plus additional tab management tools:
 
 | Tool | Description |
 |------|-------------|
@@ -92,6 +137,10 @@ The server implements all Gemini computer use predefined tools:
 | `key_combination` | Presses keyboard keys and combinations. |
 | `drag_and_drop` | Drags an element from one position to another. |
 | `current_state` | Returns the current screenshot and URL. |
+| `new_tab` | Creates a new browser tab, optionally navigating to a URL. |
+| `close_tab` | Closes a browser tab by handle (or current tab if not specified). |
+| `switch_tab` | Switches to a different tab by handle or index. |
+| `list_tabs` | Lists all open browser tabs with their handles, URLs, and titles. |
 
 ### Disabling Tools
 

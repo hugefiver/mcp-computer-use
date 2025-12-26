@@ -11,10 +11,14 @@ categories = ["development-tools", "web-programming"]
 
 [dependencies]
 # MCP SDK
-rmcp = { version = "0.2", features = ["server", "transport-io", "macros", "schemars"] }
+rmcp = { version = "0.2", features = ["server", "transport-io", "transport-sse-server", "transport-streamable-http-server", "macros", "schemars"] }
 
 # Browser automation
 thirtyfour = { version = "0.36", features = ["tokio-multi-threaded"] }
+
+# HTTP server for streamable HTTP transport
+axum = { version = "0.8", optional = true }
+tower = { version = "0.5", optional = true }
 
 # Async runtime
 tokio = { version = "1", features = ["full"] }
@@ -40,9 +44,15 @@ base64 = "0.22"
 
 # Utilities
 async-trait = "0.1"
+which = "7"
+tokio-util = { version = "0.7", features = ["rt"] }
 
 # Schema generation
-schemars = { version = "1.0", features = ["chrono04"] }
+schemars = { version = "0.8", features = ["chrono"] }
+
+[features]
+default = ["http-server"]
+http-server = ["dep:axum", "dep:tower"]
 
 [[bin]]
 name = "mcp-computer-use"

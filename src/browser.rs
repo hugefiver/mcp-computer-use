@@ -5,10 +5,14 @@
 use crate::config::Config;
 use anyhow::Result;
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
-use std::sync::Arc;
+use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
+use thirtyfour::common::capabilities::chromium::ChromiumLikeCapabilities;
+use thirtyfour::extensions::cdp::ChromeDevTools;
 use thirtyfour::prelude::*;
+use thirtyfour::WindowHandle;
 use tokio::sync::Mutex;
 use tracing::{debug, info, warn};
 
@@ -27,6 +31,10 @@ const MAX_SCROLL_MAGNITUDE: i64 = 10000;
 
 /// Minimum allowed scroll magnitude in pixels.
 const MIN_SCROLL_MAGNITUDE: i64 = 0;
+
+/// Default user agent for undetected mode (realistic Chrome user agent).
+const UNDETECTED_USER_AGENT: &str =
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 
 /// Key mapping from user-friendly names to WebDriver key names.
 fn get_key_mapping(key: &str) -> &str {
@@ -75,26 +83,50 @@ pub struct EnvState {
     pub url: String,
 }
 
+/// Information about a browser tab.
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct TabInfo {
+    /// The window handle identifier.
+    pub handle: String,
+    /// The URL of the tab.
+    pub url: String,
+    /// The title of the tab.
+    pub title: String,
+    /// Whether this tab is currently active.
+    pub active: bool,
+    /// Navigation error if URL navigation failed (only set on new_tab).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub navigation_error: Option<String>,
+}
+
 /// Validate coordinates are within reasonable screen bounds and safe for JavaScript.
-/// 
+///
 /// Coordinates are validated to ensure:
 /// 1. They are not negative
 /// 2. They are not too far outside screen bounds (allows some tolerance for edge cases)
 /// 3. They are within JavaScript's safe integer range to prevent precision loss
 fn validate_coordinates(x: i64, y: i64, width: u32, height: u32) -> Result<()> {
     if x < 0 || y < 0 {
-        return Err(anyhow::anyhow!("Coordinates cannot be negative: ({}, {})", x, y));
+        return Err(anyhow::anyhow!(
+            "Coordinates cannot be negative: ({}, {})",
+            x,
+            y
+        ));
     }
     if x > MAX_SAFE_JS_INTEGER || y > MAX_SAFE_JS_INTEGER {
         return Err(anyhow::anyhow!(
             "Coordinates ({}, {}) exceed JavaScript safe integer limit",
-            x, y
+            x,
+            y
         ));
     }
     if x as u32 > width * 2 || y as u32 > height * 2 {
         return Err(anyhow::anyhow!(
             "Coordinates ({}, {}) are too far outside screen bounds ({}x{})",
-            x, y, width, height
+            x,
+            y,
+            width,
+            height
         ));
     }
     Ok(())
@@ -105,13 +137,15 @@ fn validate_magnitude(magnitude: i64) -> Result<()> {
     if magnitude < MIN_SCROLL_MAGNITUDE {
         return Err(anyhow::anyhow!(
             "Scroll magnitude {} is below minimum allowed value {}",
-            magnitude, MIN_SCROLL_MAGNITUDE
+            magnitude,
+            MIN_SCROLL_MAGNITUDE
         ));
     }
     if magnitude > MAX_SCROLL_MAGNITUDE {
         return Err(anyhow::anyhow!(
             "Scroll magnitude {} exceeds maximum allowed value {}",
-            magnitude, MAX_SCROLL_MAGNITUDE
+            magnitude,
+            MAX_SCROLL_MAGNITUDE
         ));
     }
     Ok(())
@@ -119,11 +153,45 @@ fn validate_magnitude(magnitude: i64) -> Result<()> {
 
 /// Valid key names for keyboard input (case-insensitive).
 static VALID_KEY_NAMES: &[&str] = &[
-    "backspace", "tab", "return", "enter", "shift", "control", "ctrl",
-    "alt", "escape", "esc", "space", "pageup", "pagedown", "end", "home",
-    "left", "arrowleft", "up", "arrowup", "right", "arrowright", "down",
-    "arrowdown", "insert", "delete", "command", "meta",
-    "f1", "f2", "f3", "f4", "f5", "f6", "f7", "f8", "f9", "f10", "f11", "f12",
+    "backspace",
+    "tab",
+    "return",
+    "enter",
+    "shift",
+    "control",
+    "ctrl",
+    "alt",
+    "escape",
+    "esc",
+    "space",
+    "pageup",
+    "pagedown",
+    "end",
+    "home",
+    "left",
+    "arrowleft",
+    "up",
+    "arrowup",
+    "right",
+    "arrowright",
+    "down",
+    "arrowdown",
+    "insert",
+    "delete",
+    "command",
+    "meta",
+    "f1",
+    "f2",
+    "f3",
+    "f4",
+    "f5",
+    "f6",
+    "f7",
+    "f8",
+    "f9",
+    "f10",
+    "f11",
+    "f12",
 ];
 
 /// Safe single-character keys that can be used in JavaScript strings.
@@ -131,20 +199,20 @@ static VALID_KEY_NAMES: &[&str] = &[
 static SAFE_SINGLE_CHAR_KEYS: &[char] = &[
     // Letters and numbers are handled separately via is_ascii_alphanumeric()
     // Safe punctuation that won't break JavaScript strings
-    '!', '@', '#', '$', '%', '^', '&', '*', '(', ')', '-', '_', '=', '+',
-    '[', ']', '{', '}', ';', ':', ',', '.', '<', '>', '/', '?', '|', '~',
+    '!', '@', '#', '$', '%', '^', '&', '*', '(', ')', '-', '_', '=', '+', '[', ']', '{', '}', ';',
+    ':', ',', '.', '<', '>', '/', '?', '|', '~',
 ];
 
 /// Validate that a key name is safe for use in JavaScript.
 /// Only allows alphanumeric characters, common key names, and safe single characters.
 fn validate_key_name(key: &str) -> Result<()> {
     let lower = key.to_lowercase();
-    
+
     // Check if it's a known key name
     if VALID_KEY_NAMES.contains(&lower.as_str()) {
         return Ok(());
     }
-    
+
     // Allow single safe characters (letters, numbers, and safe punctuation)
     if key.len() == 1 {
         let c = key.chars().next().unwrap();
@@ -152,7 +220,7 @@ fn validate_key_name(key: &str) -> Result<()> {
             return Ok(());
         }
     }
-    
+
     Err(anyhow::anyhow!(
         "Invalid key name '{}'. Only known key names and single printable characters are allowed.",
         key
@@ -195,7 +263,7 @@ impl BrowserController {
         // Currently only Chrome is fully supported
         let mut caps = DesiredCapabilities::chrome();
         if self.config.headless {
-            caps.add_arg("--headless")?;
+            caps.add_arg("--headless=new")?;
         }
         caps.add_arg("--disable-extensions")?;
         caps.add_arg("--disable-plugins")?;
@@ -208,20 +276,85 @@ impl BrowserController {
             "--window-size={},{}",
             self.config.screen_width, self.config.screen_height
         ))?;
+
+        // Undetected mode settings (inspired by patchright/undetected-chromedriver)
+        if self.config.undetected {
+            info!("Enabling undetected mode");
+            // Disable automation flags
+            caps.add_arg("--disable-blink-features=AutomationControlled")?;
+            // Remove automation indicators using add_exclude_switch
+            caps.add_exclude_switch("enable-automation")?;
+            caps.add_experimental_option("useAutomationExtension", false)?;
+            // Additional stealth options
+            caps.add_arg("--disable-infobars")?;
+            caps.add_arg("--disable-popup-blocking")?;
+            caps.add_arg("--disable-notifications")?;
+            // Set a realistic user agent
+            caps.add_arg(&format!("--user-agent={}", UNDETECTED_USER_AGENT))?;
+        }
+
         if let Some(ref binary_path) = self.config.browser_binary_path {
             caps.set_binary(binary_path.to_string_lossy().as_ref())?;
         }
 
         let driver = WebDriver::new(&self.config.webdriver_url, caps).await?;
 
+        // Apply additional stealth scripts if undetected mode is enabled
+        // Use CDP's Page.addScriptToEvaluateOnNewDocument to ensure script runs on every page
+        if self.config.undetected {
+            let stealth_script = r#"
+                Object.defineProperty(navigator, 'webdriver', {
+                    get: () => undefined
+                });
+                
+                // Override plugins property to resemble a real browser
+                Object.defineProperty(navigator, 'plugins', {
+                    get: () => ([
+                        {
+                            name: 'Chrome PDF Plugin',
+                            filename: 'internal-pdf-viewer',
+                            description: 'Portable Document Format',
+                            length: 1
+                        },
+                        {
+                            name: 'Chrome PDF Viewer',
+                            filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai',
+                            description: '',
+                            length: 1
+                        }
+                    ])
+                });
+                
+                // Override permissions query
+                const originalQuery = window.navigator.permissions.query;
+                window.navigator.permissions.query = (parameters) => (
+                    parameters.name === 'notifications' ?
+                    Promise.resolve({ state: Notification.permission }) :
+                    originalQuery(parameters)
+                );
+                
+                // Overwrite the headless check
+                Object.defineProperty(navigator, 'languages', {
+                    get: () => ['en-US', 'en']
+                });
+            "#;
+
+            // Use CDP to add script that runs on every new document
+            let dev_tools = ChromeDevTools::new(driver.handle.clone());
+            let cdp_cmd = serde_json::json!({
+                "source": stealth_script
+            });
+            let _ = dev_tools
+                .execute_cdp_with_params("Page.addScriptToEvaluateOnNewDocument", cdp_cmd)
+                .await;
+
+            // Also execute immediately for the current page
+            driver.execute(stealth_script, vec![]).await?;
+        }
+
         // Set window size
         driver
-            .set_window_rect(
-                0,
-                0,
-                self.config.screen_width,
-                self.config.screen_height,
-            )
+            .set_window_rect(0, 0, self.config.screen_width, self.config.screen_height)
             .await?;
 
         // Navigate to initial URL
@@ -236,6 +369,7 @@ impl BrowserController {
     }
 
     /// Close the browser.
+    #[allow(dead_code)]
     pub async fn close(&self) -> Result<()> {
         let mut driver_guard = self.driver.lock().await;
         if let Some(driver) = driver_guard.take() {
@@ -520,7 +654,7 @@ impl BrowserController {
     /// Press key combination.
     pub async fn key_combination(&self, keys: Vec<String>) -> Result<EnvState> {
         debug!("Pressing key combination: {:?}", keys);
-        
+
         if keys.is_empty() {
             return Err(anyhow::anyhow!("No keys provided"));
         }
@@ -550,10 +684,14 @@ impl BrowserController {
             active_element.send_keys(&key_codes[0]).await?;
         } else {
             // For multi-key combinations, execute via JavaScript
-            let ctrl = keys.iter().any(|k| k.to_lowercase() == "control" || k.to_lowercase() == "ctrl");
+            let ctrl = keys
+                .iter()
+                .any(|k| k.to_lowercase() == "control" || k.to_lowercase() == "ctrl");
             let shift = keys.iter().any(|k| k.to_lowercase() == "shift");
             let alt = keys.iter().any(|k| k.to_lowercase() == "alt");
-            let meta = keys.iter().any(|k| k.to_lowercase() == "meta" || k.to_lowercase() == "command");
+            let meta = keys
+                .iter()
+                .any(|k| k.to_lowercase() == "meta" || k.to_lowercase() == "command");
 
             // Find the main key (non-modifier)
             let main_key = keys.iter().find(|k| {
@@ -577,11 +715,7 @@ impl BrowserController {
                     }});
                     document.activeElement.dispatchEvent(event);
                     "#,
-                    escaped_key,
-                    ctrl,
-                    shift,
-                    alt,
-                    meta
+                    escaped_key, ctrl, shift, alt, meta
                 );
                 driver.execute(&script, vec![]).await?;
             }
@@ -600,7 +734,12 @@ impl BrowserController {
         destination_y: i64,
     ) -> Result<EnvState> {
         validate_coordinates(x, y, self.config.screen_width, self.config.screen_height)?;
-        validate_coordinates(destination_x, destination_y, self.config.screen_width, self.config.screen_height)?;
+        validate_coordinates(
+            destination_x,
+            destination_y,
+            self.config.screen_width,
+            self.config.screen_height,
+        )?;
         debug!(
             "Drag and drop from ({}, {}) to ({}, {})",
             x, y, destination_x, destination_y
@@ -670,7 +809,190 @@ impl BrowserController {
         self.current_state().await
     }
 
+    // ========== Tab Management Methods ==========
+
+    /// Create a new browser tab and optionally navigate to a URL.
+    /// Create a new browser tab and optionally navigate to a URL.
+    /// Returns both tab info and the current environment state.
+    pub async fn new_tab(&self, url: Option<&str>) -> Result<(TabInfo, EnvState)> {
+        debug!("Creating new tab");
+        let driver_guard = self.driver.lock().await;
+        let driver = driver_guard
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Browser not opened"))?;
+
+        // Create new tab
+        let new_handle = driver.new_tab().await?;
+
+        // Switch to the new tab
+        driver.switch_to_window(new_handle.clone()).await?;
+
+        // Navigate to URL if provided, handling failures gracefully
+        let mut navigation_error: Option<String> = None;
+        if let Some(url) = url {
+            let normalized_url = if url.starts_with("http://") || url.starts_with("https://") {
+                url.to_string()
+            } else {
+                format!("https://{}", url)
+            };
+            if let Err(e) = driver.goto(&normalized_url).await {
+                // Log the error but don't fail - tab is still created
+                warn!("Navigation failed in new tab: {}. Tab remains open.", e);
+                navigation_error = Some(format!("Navigation failed: {}", e));
+            }
+        }
+
+        tokio::time::sleep(Duration::from_millis(PAGE_SETTLE_DELAY_MS)).await;
+
+        let current_url = driver.current_url().await?.to_string();
+        let title = driver.title().await.unwrap_or_default();
+
+        let tab_info = TabInfo {
+            handle: new_handle.to_string(),
+            url: current_url.clone(),
+            title,
+            active: true,
+            navigation_error,
+        };
+
+        // Get screenshot for the state
+        let screenshot_bytes = driver.screenshot_as_png().await?;
+        let screenshot = BASE64.encode(&screenshot_bytes);
+
+        let state = EnvState {
+            screenshot,
+            url: current_url,
+        };
+
+        Ok((tab_info, state))
+    }
+
+    /// Close a browser tab by handle.
+    pub async fn close_tab(&self, handle: Option<&str>) -> Result<EnvState> {
+        debug!("Closing tab: {:?}", handle);
+        let driver_guard = self.driver.lock().await;
+        let driver = driver_guard
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Browser not opened"))?;
+
+        if let Some(handle) = handle {
+            // Switch to the specified tab first
+            let window_handle = WindowHandle::from(handle.to_string());
+            driver.switch_to_window(window_handle).await?;
+        }
+
+        // Determine which window to switch to (if any) before closing.
+        let windows = driver.windows().await?;
+        let current = driver.window().await.ok();
+        let next_window = windows.into_iter().find(|w| Some(w) != current.as_ref());
+
+        // Close current window
+        driver.close_window().await?;
+
+        // If there is another window, switch to it
+        if let Some(other) = next_window {
+            driver.switch_to_window(other).await?;
+        }
+
+        drop(driver_guard);
+        self.current_state().await
+    }
+
+    /// Switch to a tab by handle or index.
+    /// Exactly one of handle or index must be provided.
+    pub async fn switch_tab(&self, handle: Option<&str>, index: Option<usize>) -> Result<EnvState> {
+        debug!("Switching to tab: handle={:?}, index={:?}", handle, index);
+
+        // Validate that exactly one of handle or index is provided
+        match (&handle, &index) {
+            (Some(_), Some(_)) => {
+                return Err(anyhow::anyhow!(
+                    "Provide exactly one of 'handle' or 'index', not both"
+                ));
+            }
+            (None, None) => {
+                return Err(anyhow::anyhow!("Either handle or index must be provided"));
+            }
+            _ => {}
+        }
+
+        let driver_guard = self.driver.lock().await;
+        let driver = driver_guard
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Browser not opened"))?;
+
+        if let Some(handle) = handle {
+            let window_handle = WindowHandle::from(handle.to_string());
+            driver.switch_to_window(window_handle).await?;
+        } else if let Some(index) = index {
+            let windows = driver.windows().await?;
+            let window = windows
+                .into_iter()
+                .nth(index)
+                .ok_or_else(|| anyhow::anyhow!("Tab index {} out of range", index))?;
+            driver.switch_to_window(window).await?;
+        }
+
+        tokio::time::sleep(Duration::from_millis(PAGE_SETTLE_DELAY_MS)).await;
+
+        drop(driver_guard);
+        self.current_state().await
+    }
+
+    /// List all open tabs and return current state.
+    pub async fn list_tabs(&self) -> Result<(Vec<TabInfo>, EnvState)> {
+        debug!("Listing all tabs");
+        let driver_guard = self.driver.lock().await;
+        let driver = driver_guard
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Browser not opened"))?;
+
+        let current_handle = driver.window().await?;
+        let windows = driver.windows().await?;
+        let mut tabs = Vec::new();
+
+        // Perform the tab enumeration, capturing any error.
+        let result: Result<Vec<TabInfo>> = async {
+            for window in windows {
+                let is_active = window == current_handle;
+                driver.switch_to_window(window.clone()).await?;
+
+                let url = driver.current_url().await?.to_string();
+                let title = driver.title().await.unwrap_or_default();
+
+                tabs.push(TabInfo {
+                    handle: window.to_string(),
+                    url,
+                    title,
+                    active: is_active,
+                    navigation_error: None,
+                });
+            }
+
+            Ok(tabs)
+        }
+        .await;
+
+        // Always attempt to switch back to the original tab,
+        // even if an error occurred during enumeration.
+        if let Err(e) = driver.switch_to_window(current_handle).await {
+            warn!("Failed to switch back to original tab: {:?}", e);
+        }
+
+        let tabs = result?;
+
+        // Get current state (screenshot and URL)
+        let screenshot_bytes = driver.screenshot_as_png().await?;
+        let screenshot = BASE64.encode(&screenshot_bytes);
+        let url = driver.current_url().await?.to_string();
+
+        let state = EnvState { screenshot, url };
+
+        Ok((tabs, state))
+    }
+
     /// Get the screen size.
+    #[allow(dead_code)]
     pub fn screen_size(&self) -> (u32, u32) {
         (self.config.screen_width, self.config.screen_height)
     }
@@ -682,7 +1004,7 @@ impl Drop for BrowserController {
         // This is more reliable than try_lock() which may fail silently
         let was_opened = self.was_opened.load(Ordering::SeqCst);
         let was_closed = self.was_closed.load(Ordering::SeqCst);
-        
+
         if was_opened && !was_closed {
             warn!(
                 "BrowserController dropped without calling close(). \
