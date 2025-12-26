@@ -1,0 +1,135 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  release:
+    types: [published]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            artifact_name: mcp-computer-use
+            asset_name: mcp-computer-use-linux-x64
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            artifact_name: mcp-computer-use
+            asset_name: mcp-computer-use-macos-x64
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            artifact_name: mcp-computer-use
+            asset_name: mcp-computer-use-macos-arm64
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact_name: mcp-computer-use.exe
+            asset_name: mcp-computer-use-windows-x64.exe
+
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-${{ matrix.target }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ matrix.target }}-cargo-
+
+      - name: Build release binary
+        run: cargo build --release --target ${{ matrix.target }} --verbose
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset_name }}
+          path: target/${{ matrix.target }}/release/${{ matrix.artifact_name }}
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Get tag name
+        id: tag
+        run: echo "name=${GITHUB_REF_NAME}" >> $GITHUB_OUTPUT
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Prepare release files
+          mkdir -p release-files
+          for dir in artifacts/*/; do
+            name=$(basename "$dir")
+            if [ -f "$dir/mcp-computer-use" ]; then
+              cp "$dir/mcp-computer-use" "release-files/$name"
+            elif [ -f "$dir/mcp-computer-use.exe" ]; then
+              cp "$dir/mcp-computer-use.exe" "release-files/$name"
+            fi
+          done
+
+          # Create release
+          gh release create "${{ steps.tag.outputs.name }}" \
+            --title "Release ${{ steps.tag.outputs.name }}" \
+            --generate-notes \
+            release-files/*
+
+  upload-assets:
+    needs: build
+    runs-on: ubuntu-latest
+    if: github.event_name == 'release'
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Upload release assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Upload each artifact to the release
+          for dir in artifacts/*/; do
+            name=$(basename "$dir")
+            if [ -f "$dir/mcp-computer-use" ]; then
+              gh release upload "${{ github.event.release.tag_name }}" "$dir/mcp-computer-use#$name" --clobber
+            elif [ -f "$dir/mcp-computer-use.exe" ]; then
+              gh release upload "${{ github.event.release.tag_name }}" "$dir/mcp-computer-use.exe#$name" --clobber
+            fi
+          done
