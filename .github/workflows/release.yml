@@ -50,7 +50,7 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            target
+            target/${{ matrix.target }}
           key: ${{ runner.os }}-${{ matrix.target }}-cargo-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-${{ matrix.target }}-cargo-
@@ -93,17 +93,23 @@ jobs:
           for dir in artifacts/*/; do
             name=$(basename "$dir")
             if [ -f "$dir/mcp-computer-use" ]; then
-              cp "$dir/mcp-computer-use" "release-files/$name"
+              cp -p "$dir/mcp-computer-use" "release-files/$name"
             elif [ -f "$dir/mcp-computer-use.exe" ]; then
-              cp "$dir/mcp-computer-use.exe" "release-files/$name"
+              cp -p "$dir/mcp-computer-use.exe" "release-files/$name"
             fi
           done
 
           # Create release
           gh release create "${{ steps.tag.outputs.name }}" \
             --title "Release ${{ steps.tag.outputs.name }}" \
-            --generate-notes \
-            release-files/*
+            --generate-notes
+
+          # Upload assets safely
+          for file in release-files/*; do
+            if [ -f "$file" ]; then
+              gh release upload "${{ steps.tag.outputs.name }}" "$file" --clobber
+            fi
+          done
 
   upload-assets:
     needs: build
@@ -124,12 +130,20 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # Upload each artifact to the release
+          # Prepare release files with proper naming
+          mkdir -p release-files
           for dir in artifacts/*/; do
             name=$(basename "$dir")
             if [ -f "$dir/mcp-computer-use" ]; then
-              gh release upload "${{ github.event.release.tag_name }}" "$dir/mcp-computer-use#$name" --clobber
+              cp -p "$dir/mcp-computer-use" "release-files/$name"
             elif [ -f "$dir/mcp-computer-use.exe" ]; then
-              gh release upload "${{ github.event.release.tag_name }}" "$dir/mcp-computer-use.exe#$name" --clobber
+              cp -p "$dir/mcp-computer-use.exe" "release-files/${name}.exe"
+            fi
+          done
+
+          # Upload assets safely
+          for file in release-files/*; do
+            if [ -f "$file" ]; then
+              gh release upload "${{ github.event.release.tag_name }}" "$file" --clobber
             fi
           done

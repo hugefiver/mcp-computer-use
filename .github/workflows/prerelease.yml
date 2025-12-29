@@ -50,7 +50,7 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            target
+            target/${{ matrix.target }}
           key: ${{ runner.os }}-${{ matrix.target }}-cargo-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-${{ matrix.target }}-cargo-
@@ -87,7 +87,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release delete "prerelease-${{ steps.branch.outputs.name }}" --yes || true
+          gh release delete "prerelease-${{ steps.branch.outputs.name }}" --yes --cleanup-tag || true
 
       - name: Create prerelease
         env:
@@ -98,9 +98,9 @@ jobs:
           for dir in artifacts/*/; do
             name=$(basename "$dir")
             if [ -f "$dir/mcp-computer-use" ]; then
-              cp "$dir/mcp-computer-use" "release-files/$name"
+              cp -p "$dir/mcp-computer-use" "release-files/$name"
             elif [ -f "$dir/mcp-computer-use.exe" ]; then
-              cp "$dir/mcp-computer-use.exe" "release-files/$name"
+              cp -p "$dir/mcp-computer-use.exe" "release-files/$name"
             fi
           done
 
@@ -113,5 +113,11 @@ jobs:
           gh release create "prerelease-${{ steps.branch.outputs.name }}" \
             --prerelease \
             --title "Prerelease (${{ steps.branch.outputs.name }})" \
-            --notes "$NOTES" \
-            release-files/*
+            --notes "$NOTES"
+
+          # Upload assets safely, handling spaces/special characters in filenames
+          for file in release-files/*; do
+            if [ -f "$file" ]; then
+              gh release upload "prerelease-${{ steps.branch.outputs.name }}" "$file" --clobber
+            fi
+          done
