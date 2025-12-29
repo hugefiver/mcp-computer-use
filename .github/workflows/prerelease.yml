@@ -95,14 +95,22 @@ jobs:
         run: |
           # Prepare release files
           mkdir -p release-files
+          has_files=0
           for dir in artifacts/*/; do
             name=$(basename "$dir")
             if [ -f "$dir/mcp-computer-use" ]; then
               cp -p "$dir/mcp-computer-use" "release-files/$name"
+              has_files=1
             elif [ -f "$dir/mcp-computer-use.exe" ]; then
               cp -p "$dir/mcp-computer-use.exe" "release-files/$name"
+              has_files=1
             fi
           done
+
+          if [ "$has_files" -eq 0 ]; then
+            echo "No release files were found in artifacts; aborting prerelease creation." >&2
+            exit 1
+          fi
 
           # Create prerelease
           NOTES="Automated prerelease from ${{ steps.branch.outputs.name }} branch.

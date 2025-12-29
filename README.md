@@ -205,6 +205,32 @@ cargo fmt
 cargo clippy
 ```
 
+## CI/CD
+
+This project uses GitHub Actions for continuous integration and deployment:
+
+### Workflows
+
+| Workflow | Trigger | Description |
+|----------|---------|-------------|
+| **CI** | Push/PR to any branch | Runs lint (`fmt`, `clippy`), tests, and builds. Uploads build artifacts. |
+| **Prerelease** | Push to `main`/`master`/`dev` | Builds for multiple platforms and creates a prerelease. |
+| **Release** | Tag push (`v*`) or release publish | Builds for multiple platforms and creates/updates the release with assets. |
+
+### Supported Platforms
+
+Release binaries are built for the following platforms:
+- Linux x64 (`x86_64-unknown-linux-gnu`)
+- macOS x64 (`x86_64-apple-darwin`)
+- macOS ARM64 (`aarch64-apple-darwin`)
+- Windows x64 (`x86_64-pc-windows-msvc`)
+
+### Creating a Release
+
+1. Tag a commit: `git tag v1.0.0`
+2. Push the tag: `git push origin v1.0.0`
+3. The release workflow will automatically build and create a GitHub release with binaries for all platforms.
+
 ## References
 
 - [Gemini Computer Use Documentation](https://ai.google.dev/gemini-api/docs/computer-use)
