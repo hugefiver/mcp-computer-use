@@ -48,7 +48,7 @@ which = "7"
 tokio-util = { version = "0.7", features = ["rt"] }
 
 # Schema generation
-schemars = { version = "0.8", features = ["chrono"] }
+schemars = { version = "1.0", features = ["chrono04"] }
 
 [features]
 default = ["http-server"]

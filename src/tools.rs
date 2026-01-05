@@ -5,7 +5,7 @@
 use crate::browser::{BrowserController, EnvState, TabInfo};
 use crate::config::{tool_names, Config};
 use rmcp::{
-    handler::server::{router::tool::ToolRouter, tool::Parameters},
+    handler::server::{router::tool::ToolRouter, wrapper::Parameters},
     model::{
         CallToolResult, Content, ErrorData as McpError, Implementation, ServerCapabilities,
         ServerInfo,
@@ -13,7 +13,6 @@ use rmcp::{
     schemars, tool, tool_handler, tool_router, ServerHandler,
 };
 use serde::{Deserialize, Serialize};
-use std::future::Future;
 use std::sync::Arc;
 use tracing::info;
 
@@ -683,6 +682,9 @@ impl ServerHandler for BrowserMcpServer {
             server_info: Implementation {
                 name: "mcp-computer-use".to_string(),
                 version: env!("CARGO_PKG_VERSION").to_string(),
+                title: None,
+                icons: None,
+                website_url: None,
             },
             ..Default::default()
         }
