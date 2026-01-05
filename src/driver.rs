@@ -62,6 +62,15 @@ impl DriverManager {
 
         self.port = config.effective_driver_port();
 
+        // Check if port is already in use
+        if self.is_port_in_use(self.port) {
+            return Err(anyhow::anyhow!(
+                "Port {} is already in use. Please stop the existing process or configure \
+                 a different port with MCP_DRIVER_PORT.",
+                self.port
+            ));
+        }
+
         // Try to find the driver
         let driver_path = self.find_or_download_driver(config)?;
         self.driver_path = Some(driver_path.clone());
@@ -74,7 +83,7 @@ impl DriverManager {
         let child = Command::new(&driver_path)
             .arg(format!("--port={}", self.port))
             .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
+            .stderr(std::process::Stdio::inherit()) // Inherit stderr for debugging startup issues
             .spawn()
             .with_context(|| format!("Failed to start driver from {:?}", driver_path))?;
 
@@ -87,6 +96,15 @@ impl DriverManager {
 
         info!("Browser driver started and ready at {}", url);
         Ok(url)
+    }
+
+    /// Check if a port is already in use.
+    fn is_port_in_use(&self, port: u16) -> bool {
+        let addr: std::net::SocketAddr = match format!("127.0.0.1:{}", port).parse() {
+            Ok(a) => a,
+            Err(_) => return false,
+        };
+        TcpStream::connect_timeout(&addr, Duration::from_millis(100)).is_ok()
     }
 
     /// Find the driver in system or download it if enabled.
@@ -177,6 +195,15 @@ fn get_platform() -> &'static str {
         } else {
             "mac-x64"
         }
+    } else if cfg!(target_os = "linux") {
+        if cfg!(target_arch = "x86_64") {
+            "linux64"
+        } else {
+            // Chrome for Testing API doesn't support linux32 or ARM Linux,
+            // fall back to linux64 which may not work on non-x86_64 architectures
+            warn!("Chrome for Testing API may not support this Linux architecture; attempting linux64");
+            "linux64"
+        }
     } else {
         "linux64"
     }
@@ -200,11 +227,25 @@ fn get_cache_dir() -> Result<PathBuf> {
     } else if cfg!(target_os = "macos") {
         dirs::cache_dir()
             .map(|p| p.join("mcp-computer-use"))
-            .unwrap_or_else(|| PathBuf::from("/tmp/mcp-computer-use"))
+            .or_else(|| dirs::home_dir().map(|h| h.join(".cache").join("mcp-computer-use")))
+            .unwrap_or_else(|| {
+                warn!(
+                    "Using temporary directory /tmp/mcp-computer-use for driver cache; \
+                     this directory may be cleared on reboot."
+                );
+                PathBuf::from("/tmp/mcp-computer-use")
+            })
     } else {
         dirs::cache_dir()
             .map(|p| p.join("mcp-computer-use"))
-            .unwrap_or_else(|| PathBuf::from("/tmp/mcp-computer-use"))
+            .or_else(|| dirs::home_dir().map(|h| h.join(".cache").join("mcp-computer-use")))
+            .unwrap_or_else(|| {
+                warn!(
+                    "Using temporary directory /tmp/mcp-computer-use for driver cache; \
+                     this directory may be cleared on reboot."
+                );
+                PathBuf::from("/tmp/mcp-computer-use")
+            })
     };
 
     if !cache_dir.exists() {

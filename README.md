@@ -142,13 +142,15 @@ Connect to an already running Chrome browser with debugging enabled:
 # Start Chrome with debugging enabled
 google-chrome --remote-debugging-port=9222
 
-# In another terminal, run the MCP server
+# Start ChromeDriver separately
+chromedriver --port=9515 &
+
+# In another terminal, run the MCP server (connects to existing browser)
 MCP_CONNECTION_MODE=cdp \
-MCP_AUTO_START=true \
 ./target/release/mcp-computer-use
 ```
 
-Or let the server launch the browser for you:
+Or let the server manage everything automatically:
 
 ```bash
 MCP_CONNECTION_MODE=cdp \

@@ -142,7 +142,8 @@ async fn main() -> anyhow::Result<()> {
                 } else {
                     return Err(anyhow::anyhow!(
                         "CDP endpoint not available at port {} and MCP_AUTO_START is false. \
-                         Please start Chrome with --remote-debugging-port={} or enable MCP_AUTO_START=true.",
+                         Please start Chrome with --remote-debugging-port={} AND ensure ChromeDriver is running \
+                         (or set MCP_WEBDRIVER_URL), or enable MCP_AUTO_START=true.",
                         cdp_port,
                         cdp_port
                     ));

@@ -439,9 +439,15 @@ impl BrowserController {
             let cdp_cmd = serde_json::json!({
                 "source": stealth_script
             });
-            let _ = dev_tools
+            if let Err(e) = dev_tools
                 .execute_cdp_with_params("Page.addScriptToEvaluateOnNewDocument", cdp_cmd)
-                .await;
+                .await
+            {
+                warn!(
+                    "Failed to add stealth script via CDP (undetected mode may not work fully): {}",
+                    e
+                );
+            }
 
             // Also execute immediately for the current page
             driver.execute(stealth_script, vec![]).await?;
