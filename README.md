@@ -9,33 +9,39 @@ A Rust MCP (Model Context Protocol) server that provides browser control capabil
 - **Screenshot Capture**: Every action returns a screenshot for visual feedback
 - **Configurable**: Set browser binary path, WebDriver URL, screen size, and more
 - **Tool Filtering**: Disable specific tools as needed
-- **Cross-Browser Support**: Works with Chrome, Firefox, Edge, and Safari
 - **Multiple Transports**: Supports both stdio and HTTP streamable transports
-- **Auto-Launch Driver**: Optionally auto-start ChromeDriver
+- **Auto-Start Mode**: Automatically launches ChromeDriver and browser
+- **Auto-Download Driver**: Automatically downloads ChromeDriver if not found
+- **CDP Mode**: Chrome DevTools Protocol connection for existing browser control
 - **Undetected Mode**: Stealth mode to help avoid bot detection (inspired by patchright)
-- **CDP Mode**: Direct Chrome DevTools Protocol connection (auto-launches browser if needed)
-- **Smart Browser Detection**: Auto-detect browser from PATH and common installation paths
+- **Smart Detection**: Auto-detect browser and driver from PATH and common locations
 
 ## Prerequisites
 
 - Rust 1.70 or later
+- Chrome browser installed (auto-detected from PATH or common locations)
 - One of the following:
-  - A WebDriver server running (e.g., ChromeDriver, GeckoDriver)
-  - Use auto-launch driver feature (`MCP_AUTO_LAUNCH_DRIVER=true`)
-  - Use CDP mode (`MCP_CONNECTION_MODE=cdp`) for direct browser control
-- The corresponding browser installed (auto-detected from PATH or common locations)
+  - Use `MCP_AUTO_START=true` for fully automatic setup (recommended)
+  - A WebDriver server running (e.g., ChromeDriver)
+  - Use CDP mode (`MCP_CONNECTION_MODE=cdp`) with an existing browser
 
-### Installing ChromeDriver
+## Quick Start
+
+The easiest way to get started is with auto-start mode:
 
 ```bash
-# On Ubuntu/Debian
-sudo apt install chromium-chromedriver
+# Build the project
+cargo build --release
 
-# On macOS with Homebrew
-brew install chromedriver
-
-# Or download from https://chromedriver.chromium.org/downloads
+# Run with automatic driver and browser management
+MCP_AUTO_START=true MCP_AUTO_DOWNLOAD_DRIVER=true ./target/release/mcp-computer-use
 ```
+
+This will:
+1. Auto-detect Chrome browser on your system
+2. Download ChromeDriver if not found
+3. Launch ChromeDriver automatically
+4. Start the MCP server
 
 ## Installation
 
@@ -54,80 +60,83 @@ cargo build --release
 
 The server can be configured using environment variables:
 
+### Core Settings
+
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `MCP_BROWSER_BINARY_PATH` | Path to the browser binary | (auto-detect) |
-| `MCP_WEBDRIVER_URL` | WebDriver server URL | `http://localhost:9515` |
-| `MCP_BROWSER_TYPE` | Browser type: chrome, firefox, edge, safari | `chrome` |
+| `MCP_AUTO_START` | Automatically manage browser/driver lifecycle | `false` |
+| `MCP_AUTO_DOWNLOAD_DRIVER` | Download ChromeDriver if not found | `false` |
+| `MCP_CONNECTION_MODE` | Connection mode: `webdriver` or `cdp` | `webdriver` |
+| `MCP_HEADLESS` | Run browser in headless mode | `true` |
+
+### Browser Settings
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `MCP_BROWSER_PATH` | Path to the browser binary | (auto-detect) |
+| `MCP_BROWSER_TYPE` | Browser type (currently only `chrome`) | `chrome` |
 | `MCP_SCREEN_WIDTH` | Screen width in pixels | `1280` |
 | `MCP_SCREEN_HEIGHT` | Screen height in pixels | `720` |
 | `MCP_INITIAL_URL` | Initial URL to load | `https://www.google.com` |
 | `MCP_SEARCH_ENGINE_URL` | Search engine URL for search action | `https://www.google.com` |
-| `MCP_HEADLESS` | Run browser in headless mode | `true` |
-| `MCP_DISABLED_TOOLS` | Comma-separated list of tools to disable | (empty) |
-| `MCP_HIGHLIGHT_MOUSE` | Highlight mouse position for debugging | `false` |
-| `MCP_TRANSPORT` | Transport mode: `stdio` or `http` | `stdio` |
-| `MCP_HTTP_HOST` | HTTP server host (when using http transport) | `127.0.0.1` |
-| `MCP_HTTP_PORT` | HTTP server port (when using http transport) | `8080` |
-| `MCP_AUTO_LAUNCH_DRIVER` | Automatically launch browser driver | `false` |
-| `MCP_DRIVER_PATH` | Path to browser driver executable | (auto-detect) |
-| `MCP_DRIVER_PORT` | Port for auto-launched driver | `9515` |
 | `MCP_UNDETECTED` | Enable undetected/stealth mode | `false` |
-| `MCP_CONNECTION_MODE` | Connection mode: `webdriver` or `cdp` | `webdriver` |
-| `MCP_CDP_PORT` | CDP port for direct browser connection | `9222` |
-| `MCP_AUTO_LAUNCH_BROWSER` | Auto-launch browser when using CDP mode | `false` |
-| `MCP_AUTO_DOWNLOAD_DRIVER` | Auto-download driver if not found | `false` |
 
-### Example Configuration
+### Driver Settings (used when MCP_AUTO_START=true)
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `MCP_DRIVER_PATH` | Path to browser driver executable | (auto-detect) |
+| `MCP_DRIVER_PORT` | Port for driver | `9515` |
+
+### Manual Mode Settings (used when MCP_AUTO_START=false)
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `MCP_WEBDRIVER_URL` | WebDriver server URL | `http://localhost:9515` |
+| `MCP_CDP_PORT` | CDP port for browser connection | `9222` |
+
+### Transport Settings
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `MCP_TRANSPORT` | Transport mode: `stdio` or `http` | `stdio` |
+| `MCP_HTTP_HOST` | HTTP server host | `127.0.0.1` |
+| `MCP_HTTP_PORT` | HTTP server port | `8080` |
+
+### Other Settings
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `MCP_DISABLED_TOOLS` | Comma-separated list of tools to disable | (empty) |
+
+## Usage Modes
+
+### 1. Auto-Start Mode (Recommended)
+
+The simplest way to use this server. Automatically manages ChromeDriver and browser:
 
 ```bash
-# Start ChromeDriver first (or use MCP_AUTO_LAUNCH_DRIVER=true)
+MCP_AUTO_START=true \
+MCP_AUTO_DOWNLOAD_DRIVER=true \
+./target/release/mcp-computer-use
+```
+
+### 2. Manual WebDriver Mode
+
+If you want to manage ChromeDriver yourself:
+
+```bash
+# Start ChromeDriver manually
 chromedriver --port=9515 &
 
-# Run the MCP server with custom configuration
-MCP_BROWSER_TYPE=chrome \
-MCP_HEADLESS=true \
-MCP_SCREEN_WIDTH=1920 \
-MCP_SCREEN_HEIGHT=1080 \
+# Run the MCP server
+MCP_WEBDRIVER_URL=http://localhost:9515 \
 ./target/release/mcp-computer-use
 ```
 
-### HTTP Transport Mode
+### 3. CDP Mode (Connect to Existing Browser)
 
-To run the server with HTTP streamable transport instead of stdio:
-
-```bash
-MCP_TRANSPORT=http \
-MCP_HTTP_HOST=127.0.0.1 \
-MCP_HTTP_PORT=8080 \
-./target/release/mcp-computer-use
-```
-
-The HTTP server exposes an MCP endpoint at `/mcp`.
-
-> **Security note:** The HTTP endpoint does not provide authentication or encryption by default. Do not expose it directly to untrusted networks or the public internet. Bind it only to localhost (for example, `127.0.0.1`) unless you place it behind appropriate security protections such as TLS termination, authentication, and firewall rules.
-
-### Auto-Launch Driver
-
-To automatically launch ChromeDriver:
-
-```bash
-MCP_AUTO_LAUNCH_DRIVER=true \
-./target/release/mcp-computer-use
-```
-
-### CDP Mode (Chrome DevTools Protocol)
-
-Use CDP mode for direct browser control without needing a WebDriver. This mode connects directly to Chrome's debugging port:
-
-```bash
-# Auto-launch browser with CDP
-MCP_CONNECTION_MODE=cdp \
-MCP_AUTO_LAUNCH_BROWSER=true \
-./target/release/mcp-computer-use
-```
-
-Or connect to an already running Chrome instance:
+Connect to an already running Chrome browser with debugging enabled:
 
 ```bash
 # Start Chrome with debugging enabled
@@ -135,22 +144,43 @@ google-chrome --remote-debugging-port=9222
 
 # In another terminal, run the MCP server
 MCP_CONNECTION_MODE=cdp \
-MCP_CDP_PORT=9222 \
+MCP_AUTO_START=true \
 ./target/release/mcp-computer-use
 ```
 
-When `MCP_AUTO_LAUNCH_BROWSER=true`, the server will automatically launch Chrome with CDP enabled. When `MCP_AUTO_LAUNCH_BROWSER=false` (default), the server requires an existing Chrome instance with debugging enabled and will return an error if none is found.
+Or let the server launch the browser for you:
+
+```bash
+MCP_CONNECTION_MODE=cdp \
+MCP_AUTO_START=true \
+./target/release/mcp-computer-use
+```
+
+### 4. HTTP Transport Mode
+
+Run the server with HTTP streamable transport:
+
+```bash
+MCP_TRANSPORT=http \
+MCP_AUTO_START=true \
+./target/release/mcp-computer-use
+```
+
+The HTTP server exposes an MCP endpoint at `/mcp`.
+
+> **Security note:** The HTTP endpoint does not provide authentication or encryption. Only bind to localhost unless you have proper security measures in place.
 
 ### Undetected Mode
 
-To enable stealth/undetected mode that helps avoid bot detection:
+Enable stealth mode to help avoid bot detection:
 
 ```bash
 MCP_UNDETECTED=true \
+MCP_AUTO_START=true \
 ./target/release/mcp-computer-use
 ```
 
-This mode applies various anti-detection techniques inspired by [patchright](https://github.com/Kaliiiiiiiiii-Vinyzu/patchright).
+This applies various anti-detection techniques inspired by [patchright](https://github.com/Kaliiiiiiiiii-Vinyzu/patchright).
 
 ## Available Tools
 
@@ -179,10 +209,7 @@ The server implements all Gemini computer use predefined tools plus additional t
 
 ### Disabling Tools
 
-To disable specific tools, set the `MCP_DISABLED_TOOLS` environment variable:
-
 ```bash
-# Disable drag_and_drop and key_combination tools
 MCP_DISABLED_TOOLS=drag_and_drop,key_combination ./target/release/mcp-computer-use
 ```
 
@@ -198,8 +225,8 @@ Add to your Claude Desktop configuration (`claude_desktop_config.json`):
     "browser": {
       "command": "/path/to/mcp-computer-use",
       "env": {
-        "MCP_BROWSER_TYPE": "chrome",
-        "MCP_WEBDRIVER_URL": "http://localhost:9515",
+        "MCP_AUTO_START": "true",
+        "MCP_AUTO_DOWNLOAD_DRIVER": "true",
         "MCP_HEADLESS": "false"
       }
     }
@@ -209,7 +236,7 @@ Add to your Claude Desktop configuration (`claude_desktop_config.json`):
 
 ### Programmatic Usage
 
-When using with an MCP client, first call `open_web_browser` to start the browser, then use other tools to interact with web pages. Each tool returns a JSON response with the current URL and a base64-encoded screenshot.
+First call `open_web_browser` to start the browser, then use other tools to interact with web pages. Each tool returns a JSON response with the current URL and a base64-encoded screenshot.
 
 ## Architecture
 
@@ -220,7 +247,7 @@ mcp-computer-use/
 │   ├── config.rs         # Configuration management
 │   ├── browser.rs        # Browser controller using thirtyfour
 │   ├── browser_manager.rs # Browser detection and CDP launch
-│   ├── driver.rs         # WebDriver management
+│   ├── driver.rs         # WebDriver management and auto-download
 │   └── tools.rs          # MCP tool definitions
 ├── Cargo.toml            # Dependencies and project metadata
 └── README.md             # This file
@@ -250,13 +277,12 @@ This project uses GitHub Actions for continuous integration and deployment:
 
 | Workflow | Trigger | Description |
 |----------|---------|-------------|
-| **CI** | Push/PR to any branch | Runs lint (`fmt`, `clippy`), tests, and builds. Uploads build artifacts. |
+| **CI** | Push/PR to any branch | Runs lint (`fmt`, `clippy`), tests, and builds. |
 | **Prerelease** | Push to `main`/`master`/`dev` | Builds for multiple platforms and creates a prerelease. |
-| **Release** | Tag push (`v*`) or release publish | Builds for multiple platforms and creates/updates the release with assets. |
+| **Release** | Tag push (`v*`) | Builds for multiple platforms and creates a release. |
 
 ### Supported Platforms
 
-Release binaries are built for the following platforms:
 - Linux x64 (`x86_64-unknown-linux-gnu`)
 - macOS x64 (`x86_64-apple-darwin`)
 - macOS ARM64 (`aarch64-apple-darwin`)
@@ -264,9 +290,10 @@ Release binaries are built for the following platforms:
 
 ### Creating a Release
 
-1. Tag a commit: `git tag v1.0.0`
-2. Push the tag: `git push origin v1.0.0`
-3. The release workflow will automatically build and create a GitHub release with binaries for all platforms.
+```bash
+git tag v1.0.0
+git push origin v1.0.0
+```
 
 ## References
 

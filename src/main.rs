@@ -8,8 +8,8 @@
 //!
 //! The server can be configured using environment variables:
 //!
-//! - `MCP_BROWSER_BINARY_PATH`: Path to the browser binary
-//! - `MCP_WEBDRIVER_URL`: WebDriver server URL (default: http://localhost:9515)
+//! - `MCP_BROWSER_PATH`: Path to the browser binary (auto-detected if not set)
+//! - `MCP_WEBDRIVER_URL`: WebDriver server URL (auto-determined when MCP_AUTO_START=true)
 //! - `MCP_BROWSER_TYPE`: Browser type (currently only `chrome` is supported)
 //! - `MCP_SCREEN_WIDTH`: Screen width in pixels (default: 1280)
 //! - `MCP_SCREEN_HEIGHT`: Screen height in pixels (default: 720)
@@ -17,25 +17,23 @@
 //! - `MCP_SEARCH_ENGINE_URL`: Search engine URL (default: https://www.google.com)
 //! - `MCP_HEADLESS`: Run in headless mode (default: true)
 //! - `MCP_DISABLED_TOOLS`: Comma-separated list of tools to disable
-//! - `MCP_HIGHLIGHT_MOUSE`: Highlight mouse position for debugging (default: false)
 //! - `MCP_TRANSPORT`: Transport mode: stdio or http (default: stdio)
 //! - `MCP_HTTP_HOST`: HTTP server host (default: 127.0.0.1)
 //! - `MCP_HTTP_PORT`: HTTP server port (default: 8080)
-//! - `MCP_AUTO_LAUNCH_DRIVER`: Automatically launch browser driver (default: false)
-//! - `MCP_DRIVER_PATH`: Path to browser driver executable
-//! - `MCP_DRIVER_PORT`: Port for auto-launched driver (default: 9515)
+//! - `MCP_AUTO_START`: Automatically manage browser/driver lifecycle (default: false)
+//! - `MCP_AUTO_DOWNLOAD_DRIVER`: Download driver if not found (default: false)
+//! - `MCP_DRIVER_PATH`: Path to browser driver executable (auto-detected if not set)
+//! - `MCP_DRIVER_PORT`: Port for driver (default: 9515)
 //! - `MCP_UNDETECTED`: Enable undetected/stealth mode (default: false)
 //! - `MCP_CONNECTION_MODE`: Connection mode: webdriver or cdp (default: webdriver)
-//! - `MCP_CDP_PORT`: CDP port for direct browser connection (default: 9222)
-//! - `MCP_AUTO_LAUNCH_BROWSER`: Automatically launch browser for CDP mode (default: false)
-//! - `MCP_AUTO_DOWNLOAD_DRIVER`: Automatically download driver if not found (default: false)
+//! - `MCP_CDP_PORT`: CDP port for browser connection (default: 9222)
 //!
 //! # Usage
 //!
-//! 1. Start a WebDriver server (e.g., ChromeDriver) or use MCP_AUTO_LAUNCH_DRIVER=true
-//!    Or use CDP mode with MCP_CONNECTION_MODE=cdp and MCP_AUTO_LAUNCH_BROWSER=true
-//! 2. Run this MCP server
-//! 3. Connect an MCP client to interact with the browser
+//! 1. Use MCP_AUTO_START=true for automatic driver/browser management
+//! 2. Or manually start ChromeDriver and set MCP_WEBDRIVER_URL
+//! 3. For CDP mode: set MCP_CONNECTION_MODE=cdp with MCP_AUTO_START=true
+//! 4. Run this MCP server and connect an MCP client
 
 mod browser;
 mod browser_manager;
@@ -79,16 +77,13 @@ async fn main() -> anyhow::Result<()> {
     // Setup based on connection mode
     match config.connection_mode {
         ConnectionMode::WebDriver => {
-            // Ensure driver is ready (launches if auto_launch_driver is enabled)
+            // Ensure driver is ready (finds/downloads/launches if auto_start is enabled)
             match driver_manager.ensure_driver_ready(&config) {
                 Ok(url) => {
-                    if config.auto_launch_driver {
-                        info!(
-                            "Browser driver auto-launched, updating webdriver URL to: {}",
-                            url
-                        );
+                    if config.auto_start {
+                        info!("Browser driver auto-started, using webdriver URL: {}", url);
                     }
-                    config.webdriver_url = url;
+                    config.webdriver_url = Some(url);
                 }
                 Err(e) => {
                     error!("Failed to ensure browser driver is ready: {}", e);
@@ -98,41 +93,58 @@ async fn main() -> anyhow::Result<()> {
         }
         ConnectionMode::Cdp => {
             info!("Using CDP (Chrome DevTools Protocol) mode");
-            // If auto_launch_browser is enabled, launch browser with CDP
-            if config.auto_launch_browser {
+            let cdp_port = config.effective_cdp_port();
+
+            if config.auto_start {
+                // Auto-start: launch browser with CDP, then use ChromeDriver with debuggerAddress
                 match driver_manager
                     .browser_manager()
                     .launch_browser_with_cdp(&config)
                 {
                     Ok(cdp_url) => {
                         info!("Browser launched with CDP at: {}", cdp_url);
-                        // Update webdriver_url to point to CDP endpoint for thirtyfour
-                        config.webdriver_url = cdp_url;
                     }
                     Err(e) => {
                         error!("Failed to launch browser with CDP: {}", e);
                         return Err(e);
                     }
                 }
+
+                // Now we need ChromeDriver to connect to this browser via debuggerAddress
+                // First ensure ChromeDriver is available
+                match driver_manager.ensure_driver_ready(&config) {
+                    Ok(url) => {
+                        info!("ChromeDriver ready at: {}", url);
+                        config.webdriver_url = Some(url);
+                    }
+                    Err(e) => {
+                        error!("Failed to start ChromeDriver for CDP mode: {}", e);
+                        return Err(e);
+                    }
+                }
             } else {
-                // Check if CDP endpoint is available
-                if driver_manager
-                    .browser_manager()
-                    .is_cdp_available(config.cdp_port)
-                {
+                // Check if CDP endpoint is available (user started browser manually)
+                if driver_manager.browser_manager().is_cdp_available(cdp_port) {
                     info!(
                         "CDP endpoint available at port {}, using existing browser",
-                        config.cdp_port
+                        cdp_port
                     );
-                    config.webdriver_url = format!("http://127.0.0.1:{}", config.cdp_port);
+                    // Still need ChromeDriver to control via debuggerAddress
+                    match driver_manager.ensure_driver_ready(&config) {
+                        Ok(url) => {
+                            config.webdriver_url = Some(url);
+                        }
+                        Err(e) => {
+                            error!("Failed to ensure ChromeDriver is ready: {}", e);
+                            return Err(e);
+                        }
+                    }
                 } else {
-                    // Respect auto_launch_browser=false by returning an error
                     return Err(anyhow::anyhow!(
-                        "CDP endpoint not available at port {} and MCP_AUTO_LAUNCH_BROWSER is \
-                         false. Please start Chrome with --remote-debugging-port={} or enable \
-                         MCP_AUTO_LAUNCH_BROWSER.",
-                        config.cdp_port,
-                        config.cdp_port
+                        "CDP endpoint not available at port {} and MCP_AUTO_START is false. \
+                         Please start Chrome with --remote-debugging-port={} or enable MCP_AUTO_START=true.",
+                        cdp_port,
+                        cdp_port
                     ));
                 }
             }
@@ -160,8 +172,6 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // DriverManager is cleaned up automatically when it goes out of scope
-    // (on any return path from this function, including errors).
-
     info!("MCP server shutting down");
     Ok(())
 }
@@ -185,7 +195,8 @@ async fn run_http_server(config: Config) -> anyhow::Result<()> {
     use std::sync::Arc;
     use tokio_util::sync::CancellationToken;
 
-    let bind_addr = format!("{}:{}", config.http_host, config.http_port);
+    let http_port = config.effective_http_port();
+    let bind_addr = format!("{}:{}", config.http_host, http_port);
     info!("Running MCP server on HTTP at {}...", bind_addr);
 
     // Security warning for non-localhost bindings

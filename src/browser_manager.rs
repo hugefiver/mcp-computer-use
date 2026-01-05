@@ -298,7 +298,7 @@ impl BrowserManager {
         }
 
         let browser_path = self.find_browser(config)?;
-        self.cdp_port = config.cdp_port;
+        self.cdp_port = config.effective_cdp_port();
 
         info!(
             "Launching browser with CDP on port {}: {:?}",
