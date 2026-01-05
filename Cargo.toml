@@ -52,6 +52,10 @@ async-trait = "0.1"
 which = "8"
 tokio-util = { version = "0.7", features = ["rt"] }
 
+# File locking for concurrent downloads (Unix only)
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 # Schema generation
 schemars = { version = "1.0", features = ["chrono04"] }
 

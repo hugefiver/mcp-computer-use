@@ -1232,6 +1232,7 @@ dependencies = [
  "base64",
  "config",
  "dirs",
+ "libc",
  "reqwest",
  "rmcp",
  "schemars",

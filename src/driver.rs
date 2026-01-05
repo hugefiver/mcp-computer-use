@@ -220,37 +220,16 @@ fn get_chromedriver_exe_name() -> &'static str {
 
 /// Get the cache directory for downloaded drivers.
 fn get_cache_dir() -> Result<PathBuf> {
-    let cache_dir = if cfg!(target_os = "windows") {
-        dirs::cache_dir()
-            .map(|p| p.join("mcp-computer-use"))
-            .or_else(|| dirs::home_dir().map(|h| h.join(".cache").join("mcp-computer-use")))
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "Could not determine cache directory. Please set HOME environment variable \
-                     or ensure a standard cache directory is available."
-                )
-            })?
-    } else if cfg!(target_os = "macos") {
-        dirs::cache_dir()
-            .map(|p| p.join("mcp-computer-use"))
-            .or_else(|| dirs::home_dir().map(|h| h.join(".cache").join("mcp-computer-use")))
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "Could not determine cache directory. Please set HOME environment variable \
-                     or ensure a standard cache directory is available."
-                )
-            })?
-    } else {
-        dirs::cache_dir()
-            .map(|p| p.join("mcp-computer-use"))
-            .or_else(|| dirs::home_dir().map(|h| h.join(".cache").join("mcp-computer-use")))
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "Could not determine cache directory. Please set HOME environment variable \
-                     or ensure a standard cache directory is available."
-                )
-            })?
-    };
+    // Use the same logic for all platforms - try cache_dir first, then home_dir/.cache
+    let cache_dir = dirs::cache_dir()
+        .map(|p| p.join("mcp-computer-use"))
+        .or_else(|| dirs::home_dir().map(|h| h.join(".cache").join("mcp-computer-use")))
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "Could not determine cache directory. Please set HOME environment variable \
+                 or ensure a standard cache directory is available."
+            )
+        })?;
 
     if !cache_dir.exists() {
         fs::create_dir_all(&cache_dir)
@@ -333,6 +312,37 @@ async fn download_chromedriver_async() -> Result<PathBuf> {
         return Ok(exe_path);
     }
 
+    // Use a lock file to prevent concurrent downloads
+    let lock_path = version_dir.join(".download.lock");
+    let lock_file = fs::File::create(&lock_path)?;
+
+    // Try to acquire exclusive lock (non-blocking check first)
+    use std::io::ErrorKind;
+    #[cfg(unix)]
+    {
+        use std::os::unix::io::AsRawFd;
+        let fd = lock_file.as_raw_fd();
+        let result = unsafe { libc::flock(fd, libc::LOCK_EX | libc::LOCK_NB) };
+        if result != 0 {
+            let err = std::io::Error::last_os_error();
+            if err.kind() == ErrorKind::WouldBlock {
+                info!("Another process is downloading ChromeDriver, waiting...");
+                // Block until lock is available
+                unsafe { libc::flock(fd, libc::LOCK_EX) };
+                // Check if download completed while we were waiting
+                if exe_path.exists() {
+                    info!("ChromeDriver already cached at: {:?}", exe_path);
+                    return Ok(exe_path);
+                }
+            }
+        }
+    }
+    #[cfg(windows)]
+    {
+        // On Windows, just proceed - file creation will fail if another process has it locked
+        drop(&lock_file);
+    }
+
     // Download the zip file
     let zip_response = client
         .get(download_url)
@@ -360,8 +370,15 @@ async fn download_chromedriver_async() -> Result<PathBuf> {
         let mut file = archive.by_index(i)?;
         let file_name = file.name().to_string();
 
-        // Find the chromedriver executable
-        if file_name.ends_with(exe_name) && !file.is_dir() {
+        // Find the chromedriver executable - check if filename ends with exe name
+        // Handle both flat structure (chromedriver) and nested (chromedriver-linux64/chromedriver)
+        let is_chromedriver = if let Some(basename) = file_name.split('/').next_back() {
+            basename == exe_name && !file.is_dir()
+        } else {
+            false
+        };
+
+        if is_chromedriver {
             let mut exe_file = fs::File::create(&exe_path)?;
             std::io::copy(&mut file, &mut exe_file)?;
 
@@ -378,8 +395,9 @@ async fn download_chromedriver_async() -> Result<PathBuf> {
         }
     }
 
-    // Clean up zip
+    // Clean up zip and lock file
     let _ = fs::remove_file(&zip_path);
+    let _ = fs::remove_file(&lock_path);
 
     if exe_path.exists() {
         info!("ChromeDriver downloaded to: {:?}", exe_path);

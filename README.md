@@ -88,7 +88,7 @@ The server can be configured using environment variables:
 | `MCP_DRIVER_PATH` | Path to browser driver executable | (auto-detect) |
 | `MCP_DRIVER_PORT` | Port for driver | `9515` |
 
-### Connection Settings
+### WebDriver Settings
 
 | Variable | Description | Default |
 |----------|-------------|---------|
@@ -145,8 +145,10 @@ google-chrome --remote-debugging-port=9222
 # Start ChromeDriver separately
 chromedriver --port=9515 &
 
-# In another terminal, run the MCP server (connects to existing browser)
+# In another terminal, run the MCP server (connects to existing browser via ChromeDriver)
+# Note: MCP_WEBDRIVER_URL points to your running ChromeDriver
 MCP_CONNECTION_MODE=cdp \
+MCP_WEBDRIVER_URL=http://localhost:9515 \
 ./target/release/mcp-computer-use
 ```
 
