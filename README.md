@@ -81,14 +81,14 @@ The server can be configured using environment variables:
 | `MCP_SEARCH_ENGINE_URL` | Search engine URL for search action | `https://www.google.com` |
 | `MCP_UNDETECTED` | Enable undetected/stealth mode | `false` |
 
-### Driver Settings (used when MCP_AUTO_START=true)
+### Driver Settings
 
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `MCP_DRIVER_PATH` | Path to browser driver executable | (auto-detect) |
 | `MCP_DRIVER_PORT` | Port for driver | `9515` |
 
-### Manual Mode Settings (used when MCP_AUTO_START=false)
+### Connection Settings
 
 | Variable | Description | Default |
 |----------|-------------|---------|

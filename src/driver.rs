@@ -223,29 +223,33 @@ fn get_cache_dir() -> Result<PathBuf> {
     let cache_dir = if cfg!(target_os = "windows") {
         dirs::cache_dir()
             .map(|p| p.join("mcp-computer-use"))
-            .unwrap_or_else(|| PathBuf::from("C:\\temp\\mcp-computer-use"))
+            .or_else(|| dirs::home_dir().map(|h| h.join(".cache").join("mcp-computer-use")))
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Could not determine cache directory. Please set HOME environment variable \
+                     or ensure a standard cache directory is available."
+                )
+            })?
     } else if cfg!(target_os = "macos") {
         dirs::cache_dir()
             .map(|p| p.join("mcp-computer-use"))
             .or_else(|| dirs::home_dir().map(|h| h.join(".cache").join("mcp-computer-use")))
-            .unwrap_or_else(|| {
-                warn!(
-                    "Using temporary directory /tmp/mcp-computer-use for driver cache; \
-                     this directory may be cleared on reboot."
-                );
-                PathBuf::from("/tmp/mcp-computer-use")
-            })
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Could not determine cache directory. Please set HOME environment variable \
+                     or ensure a standard cache directory is available."
+                )
+            })?
     } else {
         dirs::cache_dir()
             .map(|p| p.join("mcp-computer-use"))
             .or_else(|| dirs::home_dir().map(|h| h.join(".cache").join("mcp-computer-use")))
-            .unwrap_or_else(|| {
-                warn!(
-                    "Using temporary directory /tmp/mcp-computer-use for driver cache; \
-                     this directory may be cleared on reboot."
-                );
-                PathBuf::from("/tmp/mcp-computer-use")
-            })
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Could not determine cache directory. Please set HOME environment variable \
+                     or ensure a standard cache directory is available."
+                )
+            })?
     };
 
     if !cache_dir.exists() {
