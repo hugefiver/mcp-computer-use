@@ -22,6 +22,12 @@ const PAGE_SETTLE_DELAY_MS: u64 = 500;
 /// Delay in milliseconds after typing actions.
 const TYPING_DELAY_MS: u64 = 100;
 
+/// Maximum number of retries for transient failures.
+const MAX_RETRIES: u32 = 3;
+
+/// Delay between retries in milliseconds.
+const RETRY_DELAY_MS: u64 = 200;
+
 /// Maximum safe integer value for JavaScript (2^53 - 1).
 /// Coordinates beyond this could lose precision in JavaScript.
 const MAX_SAFE_JS_INTEGER: i64 = 9007199254740991;
@@ -72,6 +78,66 @@ fn get_key_mapping(key: &str) -> &str {
         "command" | "meta" => "\u{E03D}",
         _ => key,
     }
+}
+
+/// Retry a fallible async operation with exponential backoff.
+///
+/// This helper is useful for operations that might fail transiently,
+/// such as WebDriver commands during page transitions.
+async fn retry_async<F, Fut, T, E>(operation_name: &str, mut f: F) -> std::result::Result<T, E>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = std::result::Result<T, E>>,
+    E: std::fmt::Display,
+{
+    let mut last_error = None;
+    for attempt in 0..MAX_RETRIES {
+        match f().await {
+            Ok(result) => return Ok(result),
+            Err(e) => {
+                if attempt < MAX_RETRIES - 1 {
+                    let delay = RETRY_DELAY_MS * (1 << attempt);
+                    debug!(
+                        "{} failed (attempt {}/{}): {}, retrying in {}ms",
+                        operation_name,
+                        attempt + 1,
+                        MAX_RETRIES,
+                        e,
+                        delay
+                    );
+                    tokio::time::sleep(Duration::from_millis(delay)).await;
+                }
+                last_error = Some(e);
+            }
+        }
+    }
+    Err(last_error.unwrap())
+}
+
+/// Wait for page to be ready (document.readyState === 'complete').
+async fn wait_for_page_ready(driver: &WebDriver) -> Result<()> {
+    let timeout = Duration::from_secs(10);
+    let start = std::time::Instant::now();
+
+    while start.elapsed() < timeout {
+        let ready_state: String = driver
+            .execute("return document.readyState", vec![])
+            .await?
+            .json()
+            .as_str()
+            .unwrap_or("loading")
+            .to_string();
+
+        if ready_state == "complete" {
+            return Ok(());
+        }
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    // Timeout is not an error - page might be slow loading
+    debug!("Page load timeout reached, continuing anyway");
+    Ok(())
 }
 
 /// Environment state returned by browser actions.
@@ -387,10 +453,15 @@ impl BrowserController {
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("Browser not opened"))?;
 
-        // Wait a bit for page to settle
+        // Wait for page to be ready
+        let _ = wait_for_page_ready(driver).await;
+
+        // Additional settle time for dynamic content
         tokio::time::sleep(Duration::from_millis(PAGE_SETTLE_DELAY_MS)).await;
 
-        let screenshot_bytes = driver.screenshot_as_png().await?;
+        // Use retry for screenshot in case of transient failures
+        let screenshot_bytes =
+            retry_async("screenshot", || async { driver.screenshot_as_png().await }).await?;
         let screenshot = BASE64.encode(&screenshot_bytes);
         let url = driver.current_url().await?.to_string();
 
@@ -406,30 +477,55 @@ impl BrowserController {
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("Browser not opened"))?;
 
-        // Use JavaScript to click at coordinates
+        // Try to find element at coordinates and click it with proper event dispatch
         // Note: x and y are i64, so format! only produces numeric values (no injection risk)
         let script = format!(
             r#"
-            var element = document.elementFromPoint({}, {});
-            if (element) {{
-                element.click();
-            }} else {{
-                var event = new MouseEvent('click', {{
-                    view: window,
-                    bubbles: true,
-                    cancelable: true,
-                    clientX: {},
-                    clientY: {}
-                }});
-                document.dispatchEvent(event);
-            }}
+            (function() {{
+                var element = document.elementFromPoint({}, {});
+                if (element) {{
+                    // Scroll element into view if needed
+                    element.scrollIntoView({{block: 'center', inline: 'center', behavior: 'instant'}});
+                    
+                    // Dispatch mousedown, mouseup, and click events for better compatibility
+                    var rect = element.getBoundingClientRect();
+                    var events = ['mousedown', 'mouseup', 'click'];
+                    events.forEach(function(eventType) {{
+                        var event = new MouseEvent(eventType, {{
+                            view: window,
+                            bubbles: true,
+                            cancelable: true,
+                            clientX: rect.left + rect.width / 2,
+                            clientY: rect.top + rect.height / 2,
+                            button: 0
+                        }});
+                        element.dispatchEvent(event);
+                    }});
+                    
+                    // Also try direct click as fallback
+                    if (typeof element.click === 'function') {{
+                        element.click();
+                    }}
+                    return true;
+                }}
+                return false;
+            }})();
             "#,
-            x, y, x, y
+            x, y
         );
-        driver.execute(&script, vec![]).await?;
 
-        // Wait for potential navigation
-        tokio::time::sleep(Duration::from_millis(PAGE_SETTLE_DELAY_MS)).await;
+        let result = driver.execute(&script, vec![]).await?;
+        let clicked = result.json().as_bool().unwrap_or(false);
+
+        if !clicked {
+            debug!(
+                "No element found at ({}, {}), dispatching raw click event",
+                x, y
+            );
+        }
+
+        // Wait for potential navigation or page changes
+        let _ = wait_for_page_ready(driver).await;
 
         drop(driver_guard);
         self.current_state().await
@@ -444,24 +540,41 @@ impl BrowserController {
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("Browser not opened"))?;
 
-        // Use JavaScript to simulate hover
+        // Use JavaScript to simulate hover with full mouse event sequence
         let script = format!(
             r#"
-            var element = document.elementFromPoint({}, {});
-            if (element) {{
-                var event = new MouseEvent('mouseover', {{
-                    view: window,
-                    bubbles: true,
-                    cancelable: true,
-                    clientX: {},
-                    clientY: {}
-                }});
-                element.dispatchEvent(event);
-            }}
+            (function() {{
+                var element = document.elementFromPoint({}, {});
+                if (element) {{
+                    // Dispatch mouseenter and mouseover events for proper hover behavior
+                    var events = ['mouseenter', 'mouseover', 'mousemove'];
+                    events.forEach(function(eventType) {{
+                        var event = new MouseEvent(eventType, {{
+                            view: window,
+                            bubbles: true,
+                            cancelable: true,
+                            clientX: {},
+                            clientY: {}
+                        }});
+                        element.dispatchEvent(event);
+                    }});
+                    
+                    // Trigger CSS :hover styles by focusing if focusable
+                    if (element.matches(':not(:hover)')) {{
+                        // Force style recalculation
+                        element.style.pointerEvents = 'auto';
+                    }}
+                    return true;
+                }}
+                return false;
+            }})();
             "#,
             x, y, x, y
         );
         driver.execute(&script, vec![]).await?;
+
+        // Give time for hover menus/effects to appear
+        tokio::time::sleep(Duration::from_millis(PAGE_SETTLE_DELAY_MS)).await;
 
         drop(driver_guard);
         self.current_state().await
@@ -645,7 +758,9 @@ impl BrowserController {
         };
 
         driver.goto(&normalized_url).await?;
-        tokio::time::sleep(Duration::from_millis(PAGE_SETTLE_DELAY_MS)).await;
+
+        // Wait for page to be fully loaded
+        let _ = wait_for_page_ready(driver).await;
 
         drop(driver_guard);
         self.current_state().await
