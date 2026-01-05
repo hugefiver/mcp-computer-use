@@ -143,12 +143,6 @@ impl DriverManager {
         ))
     }
 
-    /// Get the port the driver is running on.
-    #[allow(dead_code)]
-    pub fn port(&self) -> u16 {
-        self.port
-    }
-
     /// Get a reference to the browser manager.
     pub fn browser_manager(&mut self) -> &mut BrowserManager {
         &mut self.browser_manager

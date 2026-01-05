@@ -196,7 +196,7 @@ impl BrowserManager {
         }
 
         Err(anyhow::anyhow!(
-            "Could not find {} browser. Please install it or set MCP_BROWSER_BINARY_PATH.",
+            "Could not find {} browser. Please install it or set MCP_BROWSER_PATH.",
             browser_name
         ))
     }
