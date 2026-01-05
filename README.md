@@ -13,12 +13,17 @@ A Rust MCP (Model Context Protocol) server that provides browser control capabil
 - **Multiple Transports**: Supports both stdio and HTTP streamable transports
 - **Auto-Launch Driver**: Optionally auto-start ChromeDriver
 - **Undetected Mode**: Stealth mode to help avoid bot detection (inspired by patchright)
+- **CDP Mode**: Direct Chrome DevTools Protocol connection (auto-launches browser if needed)
+- **Smart Browser Detection**: Auto-detect browser from PATH and common installation paths
 
 ## Prerequisites
 
 - Rust 1.70 or later
-- A WebDriver server running (e.g., ChromeDriver, GeckoDriver) or use auto-launch feature
-- The corresponding browser installed
+- One of the following:
+  - A WebDriver server running (e.g., ChromeDriver, GeckoDriver)
+  - Use auto-launch driver feature (`MCP_AUTO_LAUNCH_DRIVER=true`)
+  - Use CDP mode (`MCP_CONNECTION_MODE=cdp`) for direct browser control
+- The corresponding browser installed (auto-detected from PATH or common locations)
 
 ### Installing ChromeDriver
 
@@ -51,7 +56,7 @@ The server can be configured using environment variables:
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `MCP_BROWSER_BINARY_PATH` | Path to the browser binary | System default |
+| `MCP_BROWSER_BINARY_PATH` | Path to the browser binary | (auto-detect) |
 | `MCP_WEBDRIVER_URL` | WebDriver server URL | `http://localhost:9515` |
 | `MCP_BROWSER_TYPE` | Browser type: chrome, firefox, edge, safari | `chrome` |
 | `MCP_SCREEN_WIDTH` | Screen width in pixels | `1280` |
@@ -68,6 +73,10 @@ The server can be configured using environment variables:
 | `MCP_DRIVER_PATH` | Path to browser driver executable | (auto-detect) |
 | `MCP_DRIVER_PORT` | Port for auto-launched driver | `9515` |
 | `MCP_UNDETECTED` | Enable undetected/stealth mode | `false` |
+| `MCP_CONNECTION_MODE` | Connection mode: `webdriver` or `cdp` | `webdriver` |
+| `MCP_CDP_PORT` | CDP port for direct browser connection | `9222` |
+| `MCP_AUTO_LAUNCH_BROWSER` | Auto-launch browser when using CDP mode | `false` |
+| `MCP_AUTO_DOWNLOAD_DRIVER` | Auto-download driver if not found | `false` |
 
 ### Example Configuration
 
@@ -97,6 +106,7 @@ MCP_HTTP_PORT=8080 \
 The HTTP server exposes an MCP endpoint at `/mcp`.
 
 > **Security note:** The HTTP endpoint does not provide authentication or encryption by default. Do not expose it directly to untrusted networks or the public internet. Bind it only to localhost (for example, `127.0.0.1`) unless you place it behind appropriate security protections such as TLS termination, authentication, and firewall rules.
+
 ### Auto-Launch Driver
 
 To automatically launch ChromeDriver:
@@ -105,6 +115,31 @@ To automatically launch ChromeDriver:
 MCP_AUTO_LAUNCH_DRIVER=true \
 ./target/release/mcp-computer-use
 ```
+
+### CDP Mode (Chrome DevTools Protocol)
+
+Use CDP mode for direct browser control without needing a WebDriver. This mode connects directly to Chrome's debugging port:
+
+```bash
+# Auto-launch browser with CDP
+MCP_CONNECTION_MODE=cdp \
+MCP_AUTO_LAUNCH_BROWSER=true \
+./target/release/mcp-computer-use
+```
+
+Or connect to an already running Chrome instance:
+
+```bash
+# Start Chrome with debugging enabled
+google-chrome --remote-debugging-port=9222
+
+# In another terminal, run the MCP server
+MCP_CONNECTION_MODE=cdp \
+MCP_CDP_PORT=9222 \
+./target/release/mcp-computer-use
+```
+
+CDP mode automatically falls back to launching a browser if no existing Chrome debug endpoint is found.
 
 ### Undetected Mode
 
@@ -181,12 +216,14 @@ When using with an MCP client, first call `open_web_browser` to start the browse
 ```
 mcp-computer-use/
 ├── src/
-│   ├── main.rs      # Entry point and MCP server setup
-│   ├── config.rs    # Configuration management
-│   ├── browser.rs   # Browser controller using thirtyfour
-│   └── tools.rs     # MCP tool definitions
-├── Cargo.toml       # Dependencies and project metadata
-└── README.md        # This file
+│   ├── main.rs           # Entry point and MCP server setup
+│   ├── config.rs         # Configuration management
+│   ├── browser.rs        # Browser controller using thirtyfour
+│   ├── browser_manager.rs # Browser detection and CDP launch
+│   ├── driver.rs         # WebDriver management
+│   └── tools.rs          # MCP tool definitions
+├── Cargo.toml            # Dependencies and project metadata
+└── README.md             # This file
 ```
 
 ## Development

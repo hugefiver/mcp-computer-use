@@ -17,12 +17,23 @@ pub enum TransportMode {
     Http,
 }
 
+/// Browser connection mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum ConnectionMode {
+    /// WebDriver mode (requires a WebDriver server like ChromeDriver)
+    #[default]
+    WebDriver,
+    /// Chrome DevTools Protocol mode (connects directly to browser's debug port)
+    Cdp,
+}
+
 /// Main configuration for the MCP browser control server.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
     /// Path to the browser binary (e.g., Chrome, Chromium, Firefox).
-    /// If not set, the default system browser will be used.
+    /// If not set, the system will auto-detect the browser.
     pub browser_binary_path: Option<PathBuf>,
 
     /// WebDriver server URL (e.g., "http://localhost:9515" for ChromeDriver).
@@ -64,7 +75,7 @@ pub struct Config {
     pub auto_launch_driver: bool,
 
     /// Path to the browser driver executable.
-    /// If not set, will try to find the driver in PATH.
+    /// If not set, will try to find the driver in PATH or common locations.
     pub driver_path: Option<PathBuf>,
 
     /// Port to use for auto-launched driver.
@@ -72,6 +83,20 @@ pub struct Config {
 
     /// Whether to use undetected/stealth mode.
     pub undetected: bool,
+
+    /// Browser connection mode: webdriver or cdp.
+    pub connection_mode: ConnectionMode,
+
+    /// CDP (Chrome DevTools Protocol) port for direct browser connection.
+    /// Only used when connection_mode is Cdp.
+    pub cdp_port: u16,
+
+    /// Whether to auto-launch browser when using CDP mode.
+    /// If true, will launch Chrome with remote debugging enabled.
+    pub auto_launch_browser: bool,
+
+    /// Whether to auto-download the browser driver if not found.
+    pub auto_download_driver: bool,
 }
 
 impl Default for Config {
@@ -94,6 +119,10 @@ impl Default for Config {
             driver_path: None,
             driver_port: 9515,
             undetected: false,
+            connection_mode: ConnectionMode::WebDriver,
+            cdp_port: 9222,
+            auto_launch_browser: false,
+            auto_download_driver: false,
         }
     }
 }
@@ -276,6 +305,62 @@ impl Config {
                     tracing::warn!(
                         "Invalid MCP_UNDETECTED '{}': {}, using default false",
                         undetected,
+                        e
+                    );
+                    false
+                }
+            };
+        }
+
+        // Connection mode configuration
+        if let Ok(mode) = std::env::var("MCP_CONNECTION_MODE") {
+            config.connection_mode = match mode.to_lowercase().as_str() {
+                "cdp" => ConnectionMode::Cdp,
+                "webdriver" => ConnectionMode::WebDriver,
+                _ => {
+                    tracing::warn!(
+                        "Invalid MCP_CONNECTION_MODE '{}', using default webdriver",
+                        mode
+                    );
+                    ConnectionMode::WebDriver
+                }
+            };
+        }
+
+        // CDP port configuration
+        if let Ok(port) = std::env::var("MCP_CDP_PORT") {
+            config.cdp_port = match port.parse() {
+                Ok(p) => p,
+                Err(e) => {
+                    tracing::warn!("Invalid MCP_CDP_PORT '{}': {}, using default 9222", port, e);
+                    9222
+                }
+            };
+        }
+
+        // Auto-launch browser configuration
+        if let Ok(auto_launch) = std::env::var("MCP_AUTO_LAUNCH_BROWSER") {
+            config.auto_launch_browser = match auto_launch.parse() {
+                Ok(a) => a,
+                Err(e) => {
+                    tracing::warn!(
+                        "Invalid MCP_AUTO_LAUNCH_BROWSER '{}': {}, using default false",
+                        auto_launch,
+                        e
+                    );
+                    false
+                }
+            };
+        }
+
+        // Auto-download driver configuration
+        if let Ok(auto_download) = std::env::var("MCP_AUTO_DOWNLOAD_DRIVER") {
+            config.auto_download_driver = match auto_download.parse() {
+                Ok(a) => a,
+                Err(e) => {
+                    tracing::warn!(
+                        "Invalid MCP_AUTO_DOWNLOAD_DRIVER '{}': {}, using default false",
+                        auto_download,
                         e
                     );
                     false
