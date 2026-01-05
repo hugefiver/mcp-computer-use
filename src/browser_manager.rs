@@ -23,7 +23,7 @@ const HEALTH_CHECK_INTERVAL_MS: u64 = 100;
 const CHROME_PATHS: &[&str] = &[
     r"C:\Program Files\Google\Chrome\Application\chrome.exe",
     r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
-    r"C:\Users\%USERNAME%\AppData\Local\Google\Chrome\Application\chrome.exe",
+    // User-specific path is expanded dynamically using LOCALAPPDATA
 ];
 
 #[cfg(target_os = "macos")]
@@ -175,26 +175,23 @@ impl BrowserManager {
         };
 
         for path_str in common_paths {
-            // Expand environment variables on Windows
-            #[cfg(target_os = "windows")]
-            let path_str = {
-                if path_str.contains('%') {
-                    if let Ok(expanded) = std::env::var("USERNAME") {
-                        path_str.replace("%USERNAME%", &expanded)
-                    } else {
-                        path_str.to_string()
-                    }
-                } else {
-                    path_str.to_string()
-                }
-            };
-            #[cfg(not(target_os = "windows"))]
-            let path_str = path_str.to_string();
-
-            let path = PathBuf::from(&path_str);
+            let path = PathBuf::from(path_str);
             if path.exists() {
                 debug!("Found browser at common path: {:?}", path);
                 return Ok(path);
+            }
+        }
+
+        // Check user-specific paths on Windows using LOCALAPPDATA
+        #[cfg(target_os = "windows")]
+        {
+            if let Ok(local_app_data) = std::env::var("LOCALAPPDATA") {
+                let user_chrome =
+                    PathBuf::from(local_app_data).join(r"Google\Chrome\Application\chrome.exe");
+                if user_chrome.exists() {
+                    debug!("Found browser in user AppData: {:?}", user_chrome);
+                    return Ok(user_chrome);
+                }
             }
         }
 
@@ -334,15 +331,15 @@ impl BrowserManager {
     fn wait_for_cdp_ready(&self) -> Result<()> {
         let start = std::time::Instant::now();
         let timeout = Duration::from_secs(BROWSER_READY_TIMEOUT_SECS);
-        let addr = format!("127.0.0.1:{}", self.cdp_port);
+        let addr: std::net::SocketAddr = format!("127.0.0.1:{}", self.cdp_port)
+            .parse()
+            .map_err(|e| anyhow::anyhow!("Invalid CDP address format: {}", e))?;
 
         debug!("Waiting for CDP to become ready on port {}", self.cdp_port);
 
         while start.elapsed() < timeout {
-            match TcpStream::connect_timeout(
-                &addr.parse().unwrap(),
-                Duration::from_millis(HEALTH_CHECK_INTERVAL_MS),
-            ) {
+            match TcpStream::connect_timeout(&addr, Duration::from_millis(HEALTH_CHECK_INTERVAL_MS))
+            {
                 Ok(_) => {
                     debug!("CDP ready after {:?}", start.elapsed());
                     return Ok(());
@@ -361,12 +358,11 @@ impl BrowserManager {
 
     /// Check if CDP endpoint is available at the specified port.
     pub fn is_cdp_available(&self, port: u16) -> bool {
-        let addr = format!("127.0.0.1:{}", port);
-        TcpStream::connect_timeout(
-            &addr.parse().unwrap(),
-            Duration::from_millis(HEALTH_CHECK_INTERVAL_MS),
-        )
-        .is_ok()
+        let addr: std::net::SocketAddr = match format!("127.0.0.1:{}", port).parse() {
+            Ok(a) => a,
+            Err(_) => return false,
+        };
+        TcpStream::connect_timeout(&addr, Duration::from_millis(HEALTH_CHECK_INTERVAL_MS)).is_ok()
     }
 
     /// Stop the browser process if we launched it.

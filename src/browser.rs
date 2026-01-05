@@ -120,16 +120,21 @@ async fn wait_for_page_ready(driver: &WebDriver) -> Result<()> {
     let start = std::time::Instant::now();
 
     while start.elapsed() < timeout {
-        let ready_state: String = driver
-            .execute("return document.readyState", vec![])
-            .await?
-            .json()
-            .as_str()
-            .unwrap_or("loading")
-            .to_string();
+        match driver.execute("return document.readyState", vec![]).await {
+            Ok(result) => {
+                let ready_state = result
+                    .json()
+                    .as_str()
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|| "loading".to_string());
 
-        if ready_state == "complete" {
-            return Ok(());
+                if ready_state == "complete" {
+                    return Ok(());
+                }
+            }
+            Err(e) => {
+                debug!("Error checking page ready state: {}", e);
+            }
         }
 
         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -558,12 +563,6 @@ impl BrowserController {
                         }});
                         element.dispatchEvent(event);
                     }});
-                    
-                    // Trigger CSS :hover styles by focusing if focusable
-                    if (element.matches(':not(:hover)')) {{
-                        // Force style recalculation
-                        element.style.pointerEvents = 'auto';
-                    }}
                     return true;
                 }}
                 return false;
