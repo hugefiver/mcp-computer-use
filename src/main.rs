@@ -126,26 +126,14 @@ async fn main() -> anyhow::Result<()> {
                     );
                     config.webdriver_url = format!("http://127.0.0.1:{}", config.cdp_port);
                 } else {
-                    warn!(
-                        "CDP endpoint not available at port {}. Please start Chrome with \
-                        --remote-debugging-port={} or set MCP_AUTO_LAUNCH_BROWSER=true",
-                        config.cdp_port, config.cdp_port
-                    );
-                    // Fall back to auto-launching browser
-                    info!("Auto-launching browser with CDP...");
-                    match driver_manager
-                        .browser_manager()
-                        .launch_browser_with_cdp(&config)
-                    {
-                        Ok(cdp_url) => {
-                            info!("Browser launched with CDP at: {}", cdp_url);
-                            config.webdriver_url = cdp_url;
-                        }
-                        Err(e) => {
-                            error!("Failed to launch browser with CDP: {}", e);
-                            return Err(e);
-                        }
-                    }
+                    // Respect auto_launch_browser=false by returning an error
+                    return Err(anyhow::anyhow!(
+                        "CDP endpoint not available at port {} and MCP_AUTO_LAUNCH_BROWSER is \
+                         false. Please start Chrome with --remote-debugging-port={} or enable \
+                         MCP_AUTO_LAUNCH_BROWSER.",
+                        config.cdp_port,
+                        config.cdp_port
+                    ));
                 }
             }
         }

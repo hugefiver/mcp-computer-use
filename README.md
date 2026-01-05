@@ -139,7 +139,7 @@ MCP_CDP_PORT=9222 \
 ./target/release/mcp-computer-use
 ```
 
-CDP mode automatically falls back to launching a browser if no existing Chrome debug endpoint is found.
+When `MCP_AUTO_LAUNCH_BROWSER=true`, the server will automatically launch Chrome with CDP enabled. When `MCP_AUTO_LAUNCH_BROWSER=false` (default), the server requires an existing Chrome instance with debugging enabled and will return an error if none is found.
 
 ### Undetected Mode
 

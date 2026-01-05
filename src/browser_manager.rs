@@ -222,18 +222,37 @@ impl BrowserManager {
 
         // 2. Try to find in PATH
         let driver_name = match config.browser_type {
-            BrowserType::Chrome => "chromedriver",
-            BrowserType::Firefox => "geckodriver",
-            BrowserType::Edge => "msedgedriver",
-            BrowserType::Safari => "safaridriver",
-        };
-
-        #[cfg(target_os = "windows")]
-        let driver_name = match config.browser_type {
-            BrowserType::Chrome => "chromedriver.exe",
-            BrowserType::Firefox => "geckodriver.exe",
-            BrowserType::Edge => "msedgedriver.exe",
-            BrowserType::Safari => "safaridriver.exe",
+            BrowserType::Chrome => {
+                if cfg!(target_os = "windows") {
+                    "chromedriver.exe"
+                } else {
+                    "chromedriver"
+                }
+            }
+            BrowserType::Firefox => {
+                if cfg!(target_os = "windows") {
+                    "geckodriver.exe"
+                } else {
+                    "geckodriver"
+                }
+            }
+            BrowserType::Edge => {
+                if cfg!(target_os = "windows") {
+                    "msedgedriver.exe"
+                } else {
+                    "msedgedriver"
+                }
+            }
+            BrowserType::Safari => {
+                if cfg!(target_os = "windows") {
+                    return Err(anyhow::anyhow!(
+                        "Safari is not available on Windows. \
+                        Please choose a different browser type."
+                    ));
+                } else {
+                    "safaridriver"
+                }
+            }
         };
 
         if let Ok(path) = which::which(driver_name) {
@@ -265,7 +284,19 @@ impl BrowserManager {
     /// Launch Chrome browser with CDP (Chrome DevTools Protocol) enabled.
     ///
     /// Returns the CDP WebSocket URL for connecting.
+    ///
+    /// # Errors
+    /// Returns an error if the browser type is not Chrome, as CDP mode only supports Chrome.
     pub fn launch_browser_with_cdp(&mut self, config: &Config) -> Result<String> {
+        // CDP mode only supports Chrome
+        if config.browser_type != BrowserType::Chrome {
+            return Err(anyhow::anyhow!(
+                "CDP mode only supports Chrome browser. Current browser type: {:?}. \
+                Please set MCP_BROWSER_TYPE=chrome or use WebDriver mode.",
+                config.browser_type
+            ));
+        }
+
         let browser_path = self.find_browser(config)?;
         self.cdp_port = config.cdp_port;
 
@@ -286,7 +317,13 @@ impl BrowserManager {
         cmd.arg("--disable-background-networking");
         cmd.arg("--disable-default-apps");
         cmd.arg("--disable-sync");
-        cmd.arg("--no-sandbox");
+
+        // --no-sandbox is needed in containerized environments but reduces security.
+        // Only enable in headless mode (typically containerized) or when explicitly configured.
+        if config.headless {
+            cmd.arg("--no-sandbox");
+        }
+
         cmd.arg("--no-first-run");
         cmd.arg("--disable-popup-blocking");
         cmd.arg(format!(
@@ -305,8 +342,16 @@ impl BrowserManager {
             cmd.arg("--disable-notifications");
         }
 
-        // Open with initial URL
-        cmd.arg(&config.initial_url);
+        // Open with initial URL - validate it looks like a URL
+        let url = &config.initial_url;
+        if url.starts_with("http://") || url.starts_with("https://") || url.starts_with("file://") {
+            cmd.arg(url);
+        } else {
+            warn!(
+                "Initial URL '{}' does not look like a valid URL, skipping",
+                url
+            );
+        }
 
         // Suppress output
         cmd.stdout(Stdio::null());

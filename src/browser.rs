@@ -84,12 +84,18 @@ fn get_key_mapping(key: &str) -> &str {
 ///
 /// This helper is useful for operations that might fail transiently,
 /// such as WebDriver commands during page transitions.
+///
+/// # Panics
+/// Panics at compile time if MAX_RETRIES is 0.
 async fn retry_async<F, Fut, T, E>(operation_name: &str, mut f: F) -> std::result::Result<T, E>
 where
     F: FnMut() -> Fut,
     Fut: std::future::Future<Output = std::result::Result<T, E>>,
     E: std::fmt::Display,
 {
+    // Compile-time check that MAX_RETRIES > 0
+    const { assert!(MAX_RETRIES > 0, "MAX_RETRIES must be greater than 0") }
+
     let mut last_error = None;
     for attempt in 0..MAX_RETRIES {
         match f().await {
@@ -111,7 +117,9 @@ where
             }
         }
     }
-    Err(last_error.unwrap())
+
+    // Safe to unwrap since we assert MAX_RETRIES > 0 and the loop always sets last_error
+    Err(last_error.expect("retry_async: loop should have set last_error"))
 }
 
 /// Wait for page to be ready (document.readyState === 'complete').
@@ -527,6 +535,43 @@ impl BrowserController {
                 "No element found at ({}, {}), dispatching raw click event",
                 x, y
             );
+
+            // Fallback: dispatch raw mouse events at the given coordinates
+            let raw_click_script = format!(
+                r#"
+                (function() {{
+                    try {{
+                        var events = ['mousedown', 'mouseup', 'click'];
+                        var success = false;
+                        events.forEach(function(eventType) {{
+                            var event = new MouseEvent(eventType, {{
+                                view: window,
+                                bubbles: true,
+                                cancelable: true,
+                                clientX: {},
+                                clientY: {},
+                                button: 0
+                            }});
+                            success = document.dispatchEvent(event) || success;
+                        }});
+                        return success;
+                    }} catch (e) {{
+                        return false;
+                    }}
+                }})();
+                "#,
+                x, y
+            );
+
+            let raw_result = driver.execute(&raw_click_script, vec![]).await?;
+            let raw_clicked = raw_result.json().as_bool().unwrap_or(false);
+
+            if !raw_clicked {
+                debug!(
+                    "Raw click event at ({}, {}) may not have been handled by the page",
+                    x, y
+                );
+            }
         }
 
         // Wait for potential navigation or page changes
