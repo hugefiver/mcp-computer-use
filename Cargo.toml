@@ -11,7 +11,7 @@ categories = ["development-tools", "web-programming"]
 
 [dependencies]
 # MCP SDK
-rmcp = { version = "0.2", features = ["server", "transport-io", "transport-sse-server", "transport-streamable-http-server", "macros", "schemars"] }
+rmcp = { version = "0.10", features = ["server", "transport-io", "transport-sse-server", "transport-streamable-http-server", "macros", "schemars"] }
 
 # Browser automation
 thirtyfour = { version = "0.36", features = ["tokio-multi-threaded"] }
