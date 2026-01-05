@@ -3,6 +3,7 @@
 //! This module provides functionality to automatically launch and manage
 //! browser drivers like ChromeDriver.
 
+use crate::browser_manager::BrowserManager;
 use crate::config::Config;
 use anyhow::{Context, Result};
 use std::net::TcpStream;
@@ -20,6 +21,7 @@ const HEALTH_CHECK_INTERVAL_MS: u64 = 100;
 pub struct DriverManager {
     process: Option<Child>,
     port: u16,
+    browser_manager: BrowserManager,
 }
 
 impl DriverManager {
@@ -28,6 +30,7 @@ impl DriverManager {
         Self {
             process: None,
             port: 9515,
+            browser_manager: BrowserManager::new(),
         }
     }
 
@@ -43,7 +46,8 @@ impl DriverManager {
             return Ok(config.webdriver_url.clone());
         }
 
-        let driver_path = self.find_driver(config)?;
+        // Use enhanced driver finding from browser_manager
+        let driver_path = self.browser_manager.find_driver(config)?;
         self.port = config.driver_port;
 
         info!(
@@ -101,33 +105,9 @@ impl DriverManager {
         ))
     }
 
-    /// Find the driver executable.
-    fn find_driver(&self, config: &Config) -> Result<std::path::PathBuf> {
-        // First, check if a path is explicitly specified
-        if let Some(ref path) = config.driver_path {
-            if path.exists() {
-                return Ok(path.clone());
-            }
-            warn!(
-                "Specified driver path {:?} does not exist, searching in PATH",
-                path
-            );
-        }
-
-        // Try to find the driver in PATH
-        let driver_name = match config.browser_type {
-            crate::config::BrowserType::Chrome => "chromedriver",
-            crate::config::BrowserType::Firefox => "geckodriver",
-            crate::config::BrowserType::Edge => "msedgedriver",
-            crate::config::BrowserType::Safari => "safaridriver",
-        };
-
-        which::which(driver_name).with_context(|| {
-            format!(
-                "Could not find {} in PATH. Please install it or set MCP_DRIVER_PATH.",
-                driver_name
-            )
-        })
+    /// Get a reference to the browser manager.
+    pub fn browser_manager(&mut self) -> &mut BrowserManager {
+        &mut self.browser_manager
     }
 
     /// Stop the driver process if running.
@@ -140,6 +120,8 @@ impl DriverManager {
             // Wait for the process to actually exit
             let _ = child.wait();
         }
+        // Also stop browser if we launched it
+        self.browser_manager.stop();
     }
 }
 

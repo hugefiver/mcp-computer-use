@@ -25,19 +25,25 @@
 //! - `MCP_DRIVER_PATH`: Path to browser driver executable
 //! - `MCP_DRIVER_PORT`: Port for auto-launched driver (default: 9515)
 //! - `MCP_UNDETECTED`: Enable undetected/stealth mode (default: false)
+//! - `MCP_CONNECTION_MODE`: Connection mode: webdriver or cdp (default: webdriver)
+//! - `MCP_CDP_PORT`: CDP port for direct browser connection (default: 9222)
+//! - `MCP_AUTO_LAUNCH_BROWSER`: Automatically launch browser for CDP mode (default: false)
+//! - `MCP_AUTO_DOWNLOAD_DRIVER`: Automatically download driver if not found (default: false)
 //!
 //! # Usage
 //!
 //! 1. Start a WebDriver server (e.g., ChromeDriver) or use MCP_AUTO_LAUNCH_DRIVER=true
+//!    Or use CDP mode with MCP_CONNECTION_MODE=cdp and MCP_AUTO_LAUNCH_BROWSER=true
 //! 2. Run this MCP server
 //! 3. Connect an MCP client to interact with the browser
 
 mod browser;
+mod browser_manager;
 mod config;
 mod driver;
 mod tools;
 
-use crate::config::{Config, TransportMode};
+use crate::config::{Config, ConnectionMode, TransportMode};
 use crate::driver::DriverManager;
 use crate::tools::BrowserMcpServer;
 use rmcp::transport::stdio;
@@ -67,21 +73,69 @@ async fn main() -> anyhow::Result<()> {
     let mut config = Config::load()?;
     info!("Configuration loaded: {:?}", config);
 
-    // Ensure driver is ready (launches if auto_launch_driver is enabled)
+    // Initialize driver manager (handles both WebDriver and CDP modes)
     let mut driver_manager = DriverManager::new();
-    match driver_manager.ensure_driver_ready(&config) {
-        Ok(url) => {
-            if config.auto_launch_driver {
-                info!(
-                    "Browser driver auto-launched, updating webdriver URL to: {}",
-                    url
-                );
+
+    // Setup based on connection mode
+    match config.connection_mode {
+        ConnectionMode::WebDriver => {
+            // Ensure driver is ready (launches if auto_launch_driver is enabled)
+            match driver_manager.ensure_driver_ready(&config) {
+                Ok(url) => {
+                    if config.auto_launch_driver {
+                        info!(
+                            "Browser driver auto-launched, updating webdriver URL to: {}",
+                            url
+                        );
+                    }
+                    config.webdriver_url = url;
+                }
+                Err(e) => {
+                    error!("Failed to ensure browser driver is ready: {}", e);
+                    return Err(e);
+                }
             }
-            config.webdriver_url = url;
         }
-        Err(e) => {
-            error!("Failed to ensure browser driver is ready: {}", e);
-            return Err(e);
+        ConnectionMode::Cdp => {
+            info!("Using CDP (Chrome DevTools Protocol) mode");
+            // If auto_launch_browser is enabled, launch browser with CDP
+            if config.auto_launch_browser {
+                match driver_manager
+                    .browser_manager()
+                    .launch_browser_with_cdp(&config)
+                {
+                    Ok(cdp_url) => {
+                        info!("Browser launched with CDP at: {}", cdp_url);
+                        // Update webdriver_url to point to CDP endpoint for thirtyfour
+                        config.webdriver_url = cdp_url;
+                    }
+                    Err(e) => {
+                        error!("Failed to launch browser with CDP: {}", e);
+                        return Err(e);
+                    }
+                }
+            } else {
+                // Check if CDP endpoint is available
+                if driver_manager
+                    .browser_manager()
+                    .is_cdp_available(config.cdp_port)
+                {
+                    info!(
+                        "CDP endpoint available at port {}, using existing browser",
+                        config.cdp_port
+                    );
+                    config.webdriver_url = format!("http://127.0.0.1:{}", config.cdp_port);
+                } else {
+                    // Respect auto_launch_browser=false by returning an error
+                    return Err(anyhow::anyhow!(
+                        "CDP endpoint not available at port {} and MCP_AUTO_LAUNCH_BROWSER is \
+                         false. Please start Chrome with --remote-debugging-port={} or enable \
+                         MCP_AUTO_LAUNCH_BROWSER.",
+                        config.cdp_port,
+                        config.cdp_port
+                    ));
+                }
+            }
         }
     }
 
