@@ -44,7 +44,7 @@ base64 = "0.22"
 
 # Utilities
 async-trait = "0.1"
-which = "7"
+which = "8"
 tokio-util = { version = "0.7", features = ["rt"] }
 
 # Schema generation
