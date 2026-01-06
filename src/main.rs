@@ -37,6 +37,7 @@
 
 mod browser;
 mod browser_manager;
+mod cdp_browser;
 mod config;
 mod driver;
 mod tools;
@@ -71,7 +72,7 @@ async fn main() -> anyhow::Result<()> {
     let mut config = Config::load()?;
     info!("Configuration loaded: {:?}", config);
 
-    // Initialize driver manager (handles both WebDriver and CDP modes)
+    // Initialize driver manager (only for WebDriver mode)
     let mut driver_manager = DriverManager::new();
 
     // Setup based on connection mode
@@ -92,63 +93,42 @@ async fn main() -> anyhow::Result<()> {
             }
         }
         ConnectionMode::Cdp => {
-            info!("Using CDP (Chrome DevTools Protocol) mode");
+            // CDP mode uses direct CDP connection without WebDriver
+            info!("Using CDP (Chrome DevTools Protocol) mode - no WebDriver required");
             let cdp_port = config.effective_cdp_port();
 
             if config.auto_start {
-                // Auto-start: launch browser with CDP, then use ChromeDriver with debuggerAddress
+                // Auto-start: launch browser with CDP enabled
                 match driver_manager
                     .browser_manager()
                     .launch_browser_with_cdp(&config)
                 {
                     Ok(cdp_url) => {
                         info!("Browser launched with CDP at: {}", cdp_url);
+                        // Store CDP URL for later use - browser will be controlled directly via CDP
                     }
                     Err(e) => {
                         error!("Failed to launch browser with CDP: {}", e);
                         return Err(e);
                     }
                 }
-
-                // Now we need ChromeDriver to connect to this browser via debuggerAddress
-                // First ensure ChromeDriver is available
-                match driver_manager.ensure_driver_ready(&config) {
-                    Ok(url) => {
-                        info!("ChromeDriver ready at: {}", url);
-                        config.webdriver_url = Some(url);
-                    }
-                    Err(e) => {
-                        error!("Failed to start ChromeDriver for CDP mode: {}", e);
-                        return Err(e);
-                    }
-                }
             } else {
                 // Check if CDP endpoint is available (user started browser manually)
-                if driver_manager.browser_manager().is_cdp_available(cdp_port) {
-                    info!(
-                        "CDP endpoint available at port {}, using existing browser",
-                        cdp_port
-                    );
-                    // Still need ChromeDriver to control via debuggerAddress
-                    match driver_manager.ensure_driver_ready(&config) {
-                        Ok(url) => {
-                            config.webdriver_url = Some(url);
-                        }
-                        Err(e) => {
-                            error!("Failed to ensure ChromeDriver is ready: {}", e);
-                            return Err(e);
-                        }
-                    }
-                } else {
+                if !driver_manager.browser_manager().is_cdp_available(cdp_port) {
                     return Err(anyhow::anyhow!(
-                        "CDP endpoint not available at port {} and MCP_AUTO_START is false. \
-                         Please start Chrome with --remote-debugging-port={} AND ensure ChromeDriver is running \
-                         (or set MCP_WEBDRIVER_URL), or enable MCP_AUTO_START=true.",
+                        "CDP endpoint not available at port {}. \
+                         Please start Chrome with --remote-debugging-port={}, \
+                         or enable MCP_AUTO_START=true to launch browser automatically.",
                         cdp_port,
                         cdp_port
                     ));
                 }
+                info!(
+                    "CDP endpoint available at port {}, will connect to existing browser",
+                    cdp_port
+                );
             }
+            // No ChromeDriver needed in CDP mode - we use chromiumoxide directly
         }
     }
 

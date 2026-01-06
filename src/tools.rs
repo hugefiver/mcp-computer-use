@@ -3,7 +3,8 @@
 //! This module defines all the MCP tools that expose browser control capabilities.
 
 use crate::browser::{BrowserController, EnvState, TabInfo};
-use crate::config::{tool_names, Config};
+use crate::cdp_browser::CdpBrowserController;
+use crate::config::{tool_names, Config, ConnectionMode};
 use rmcp::{
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
     model::{
@@ -15,6 +16,213 @@ use rmcp::{
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tracing::info;
+
+/// Unified browser interface that supports both WebDriver and CDP modes.
+pub enum BrowserBackend {
+    WebDriver(Arc<BrowserController>),
+    Cdp(Arc<CdpBrowserController>),
+}
+
+impl BrowserBackend {
+    /// Create a new browser backend based on connection mode.
+    pub fn new(config: Config) -> Self {
+        match config.connection_mode {
+            ConnectionMode::WebDriver => {
+                BrowserBackend::WebDriver(Arc::new(BrowserController::new(config)))
+            }
+            ConnectionMode::Cdp => {
+                BrowserBackend::Cdp(Arc::new(CdpBrowserController::new(config)))
+            }
+        }
+    }
+
+    /// Open the browser.
+    pub async fn open(&self) -> anyhow::Result<EnvState> {
+        match self {
+            BrowserBackend::WebDriver(ctrl) => ctrl.open().await,
+            BrowserBackend::Cdp(ctrl) => ctrl.open().await,
+        }
+    }
+
+    /// Get current state.
+    pub async fn current_state(&self) -> anyhow::Result<EnvState> {
+        match self {
+            BrowserBackend::WebDriver(ctrl) => ctrl.current_state().await,
+            BrowserBackend::Cdp(ctrl) => ctrl.current_state().await,
+        }
+    }
+
+    /// Click at coordinates.
+    pub async fn click_at(&self, x: i64, y: i64) -> anyhow::Result<EnvState> {
+        match self {
+            BrowserBackend::WebDriver(ctrl) => ctrl.click_at(x, y).await,
+            BrowserBackend::Cdp(ctrl) => ctrl.click_at(x, y).await,
+        }
+    }
+
+    /// Hover at coordinates.
+    pub async fn hover_at(&self, x: i64, y: i64) -> anyhow::Result<EnvState> {
+        match self {
+            BrowserBackend::WebDriver(ctrl) => ctrl.hover_at(x, y).await,
+            BrowserBackend::Cdp(ctrl) => ctrl.hover_at(x, y).await,
+        }
+    }
+
+    /// Type text at coordinates.
+    pub async fn type_text_at(
+        &self,
+        x: i64,
+        y: i64,
+        text: &str,
+        press_enter: bool,
+        clear_before_typing: bool,
+    ) -> anyhow::Result<EnvState> {
+        match self {
+            BrowserBackend::WebDriver(ctrl) => {
+                ctrl.type_text_at(x, y, text, press_enter, clear_before_typing)
+                    .await
+            }
+            BrowserBackend::Cdp(ctrl) => {
+                ctrl.type_text_at(x, y, text, press_enter, clear_before_typing)
+                    .await
+            }
+        }
+    }
+
+    /// Scroll the document.
+    pub async fn scroll_document(&self, direction: &str) -> anyhow::Result<EnvState> {
+        match self {
+            BrowserBackend::WebDriver(ctrl) => ctrl.scroll_document(direction).await,
+            BrowserBackend::Cdp(ctrl) => ctrl.scroll_document(direction).await,
+        }
+    }
+
+    /// Scroll at coordinates.
+    pub async fn scroll_at(
+        &self,
+        x: i64,
+        y: i64,
+        direction: &str,
+        magnitude: i64,
+    ) -> anyhow::Result<EnvState> {
+        match self {
+            BrowserBackend::WebDriver(ctrl) => ctrl.scroll_at(x, y, direction, magnitude).await,
+            BrowserBackend::Cdp(ctrl) => ctrl.scroll_at(x, y, direction, magnitude).await,
+        }
+    }
+
+    /// Wait 5 seconds.
+    pub async fn wait_5_seconds(&self) -> anyhow::Result<EnvState> {
+        match self {
+            BrowserBackend::WebDriver(ctrl) => ctrl.wait_5_seconds().await,
+            BrowserBackend::Cdp(ctrl) => ctrl.wait_5_seconds().await,
+        }
+    }
+
+    /// Go back.
+    pub async fn go_back(&self) -> anyhow::Result<EnvState> {
+        match self {
+            BrowserBackend::WebDriver(ctrl) => ctrl.go_back().await,
+            BrowserBackend::Cdp(ctrl) => ctrl.go_back().await,
+        }
+    }
+
+    /// Go forward.
+    pub async fn go_forward(&self) -> anyhow::Result<EnvState> {
+        match self {
+            BrowserBackend::WebDriver(ctrl) => ctrl.go_forward().await,
+            BrowserBackend::Cdp(ctrl) => ctrl.go_forward().await,
+        }
+    }
+
+    /// Search.
+    pub async fn search(&self) -> anyhow::Result<EnvState> {
+        match self {
+            BrowserBackend::WebDriver(ctrl) => ctrl.search().await,
+            BrowserBackend::Cdp(ctrl) => ctrl.search().await,
+        }
+    }
+
+    /// Navigate.
+    pub async fn navigate(&self, url: &str) -> anyhow::Result<EnvState> {
+        match self {
+            BrowserBackend::WebDriver(ctrl) => ctrl.navigate(url).await,
+            BrowserBackend::Cdp(ctrl) => ctrl.navigate(url).await,
+        }
+    }
+
+    /// Key combination.
+    pub async fn key_combination(&self, keys: Vec<String>) -> anyhow::Result<EnvState> {
+        match self {
+            BrowserBackend::WebDriver(ctrl) => ctrl.key_combination(keys).await,
+            BrowserBackend::Cdp(ctrl) => ctrl.key_combination(keys).await,
+        }
+    }
+
+    /// Drag and drop.
+    pub async fn drag_and_drop(
+        &self,
+        x: i64,
+        y: i64,
+        destination_x: i64,
+        destination_y: i64,
+    ) -> anyhow::Result<EnvState> {
+        match self {
+            BrowserBackend::WebDriver(ctrl) => {
+                ctrl.drag_and_drop(x, y, destination_x, destination_y)
+                    .await
+            }
+            BrowserBackend::Cdp(ctrl) => {
+                ctrl.drag_and_drop(x, y, destination_x, destination_y)
+                    .await
+            }
+        }
+    }
+
+    /// New tab (WebDriver only).
+    pub async fn new_tab(&self, url: Option<&str>) -> anyhow::Result<(TabInfo, EnvState)> {
+        match self {
+            BrowserBackend::WebDriver(ctrl) => ctrl.new_tab(url).await,
+            BrowserBackend::Cdp(_) => Err(anyhow::anyhow!(
+                "Tab management is not supported in CDP mode. Use WebDriver mode for tab operations."
+            )),
+        }
+    }
+
+    /// Close tab (WebDriver only).
+    pub async fn close_tab(&self, handle: Option<&str>) -> anyhow::Result<EnvState> {
+        match self {
+            BrowserBackend::WebDriver(ctrl) => ctrl.close_tab(handle).await,
+            BrowserBackend::Cdp(_) => Err(anyhow::anyhow!(
+                "Tab management is not supported in CDP mode. Use WebDriver mode for tab operations."
+            )),
+        }
+    }
+
+    /// Switch tab (WebDriver only).
+    pub async fn switch_tab(
+        &self,
+        handle: Option<&str>,
+        index: Option<usize>,
+    ) -> anyhow::Result<EnvState> {
+        match self {
+            BrowserBackend::WebDriver(ctrl) => ctrl.switch_tab(handle, index).await,
+            BrowserBackend::Cdp(_) => Err(anyhow::anyhow!(
+                "Tab management is not supported in CDP mode. Use WebDriver mode for tab operations."
+            )),
+        }
+    }
+
+    /// List tabs (WebDriver only).
+    pub async fn list_tabs(&self) -> anyhow::Result<(Vec<TabInfo>, EnvState)> {
+        match self {
+            BrowserBackend::WebDriver(ctrl) => ctrl.list_tabs().await,
+            BrowserBackend::Cdp(_) => Err(anyhow::anyhow!(
+                "Tab management is not supported in CDP mode. Use WebDriver mode for tab operations."
+            )),
+        }
+    }
+}
 
 /// Response type for browser actions that includes screenshot and URL.
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
@@ -86,7 +294,7 @@ fn disabled_tool_error(tool_name: &str) -> Result<CallToolResult, McpError> {
 /// MCP Server handler for browser control.
 #[derive(Clone)]
 pub struct BrowserMcpServer {
-    browser: Arc<BrowserController>,
+    browser: Arc<BrowserBackend>,
     config: Arc<Config>,
     tool_router: ToolRouter<Self>,
 }
@@ -101,7 +309,7 @@ impl BrowserMcpServer {
     /// Create a new MCP server with an Arc-wrapped configuration.
     /// This avoids cloning the config for each session in HTTP mode.
     pub fn new_with_config(config: Arc<Config>) -> Self {
-        let browser = Arc::new(BrowserController::new((*config).clone()));
+        let browser = Arc::new(BrowserBackend::new((*config).clone()));
         Self {
             browser,
             config,
@@ -109,9 +317,9 @@ impl BrowserMcpServer {
         }
     }
 
-    /// Get a reference to the browser controller.
+    /// Get a reference to the browser backend.
     #[allow(dead_code)]
-    pub fn browser(&self) -> &Arc<BrowserController> {
+    pub fn browser(&self) -> &Arc<BrowserBackend> {
         &self.browser
     }
 }
