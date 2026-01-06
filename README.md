@@ -10,9 +10,10 @@ A Rust MCP (Model Context Protocol) server that provides browser control capabil
 - **Configurable**: Set browser binary path, WebDriver URL, screen size, and more
 - **Tool Filtering**: Disable specific tools as needed
 - **Multiple Transports**: Supports both stdio and HTTP streamable transports
-- **Auto-Start Mode**: Automatically launches ChromeDriver and browser
-- **Auto-Download Driver**: Automatically downloads ChromeDriver matching your browser version
-- **CDP Mode**: Direct Chrome DevTools Protocol connection (no WebDriver required!)
+- **Multi-Browser Support**: Chrome, Edge, and Firefox browsers supported
+- **Auto-Start Mode**: Automatically launches browser driver and browser
+- **Auto-Download Driver**: Automatically downloads ChromeDriver, EdgeDriver, or GeckoDriver matching your browser version
+- **CDP Mode**: Direct Chrome DevTools Protocol connection for Chrome and Edge (no WebDriver required!)
 - **Pre-Open Browser**: Optionally open browser when MCP server starts
 - **Undetected Mode**: Stealth mode to help avoid bot detection (inspired by patchright)
 - **Smart Detection**: Auto-detect browser and driver from PATH and common locations
@@ -20,11 +21,15 @@ A Rust MCP (Model Context Protocol) server that provides browser control capabil
 ## Prerequisites
 
 - Rust 1.70 or later
-- Chrome browser installed (auto-detected from PATH or common locations)
+- A supported browser installed (auto-detected from PATH or common locations):
+  - **Chrome** (default)
+  - **Edge** (Microsoft Edge)
+  - **Firefox**
+  - **Safari** (macOS only, limited support)
 - One of the following:
   - Use `MCP_AUTO_START=true` for fully automatic setup (recommended)
-  - A WebDriver server running (e.g., ChromeDriver)
-  - Use CDP mode (`MCP_CONNECTION_MODE=cdp`) for direct browser control without WebDriver
+  - A WebDriver server running (e.g., ChromeDriver, EdgeDriver, or GeckoDriver)
+  - Use CDP mode (`MCP_CONNECTION_MODE=cdp`) for direct browser control without WebDriver (Chrome and Edge only)
 
 ## Quick Start
 
@@ -34,18 +39,29 @@ The easiest way to get started is with auto-start mode:
 # Build the project
 cargo build --release
 
-# Run with automatic driver and browser management
+# Run with Chrome (default)
 MCP_AUTO_START=true MCP_AUTO_DOWNLOAD_DRIVER=true ./target/release/mcp-computer-use
+
+# Run with Edge
+MCP_BROWSER_TYPE=edge MCP_AUTO_START=true MCP_AUTO_DOWNLOAD_DRIVER=true ./target/release/mcp-computer-use
+
+# Run with Firefox
+MCP_BROWSER_TYPE=firefox MCP_AUTO_START=true MCP_AUTO_DOWNLOAD_DRIVER=true ./target/release/mcp-computer-use
 ```
 
 This will:
-1. Auto-detect Chrome browser on your system
-2. Download ChromeDriver if not found
-3. Launch ChromeDriver automatically
+1. Auto-detect the specified browser on your system
+2. Download the appropriate driver if not found
+3. Launch the driver automatically
 4. Start the MCP server
 
-> ⚠️ **Security Note**: The `MCP_AUTO_DOWNLOAD_DRIVER=true` option downloads ChromeDriver from Google's Chrome for Testing API at runtime. While this is convenient for development, for production environments consider:
-> - Pre-installing ChromeDriver from trusted sources
+> ⚠️ **Security Note**: The `MCP_AUTO_DOWNLOAD_DRIVER=true` option downloads browser drivers from official sources at runtime:
+> - ChromeDriver from Google's Chrome for Testing API
+> - EdgeDriver from Microsoft's Edge WebDriver site
+> - GeckoDriver from Mozilla's GitHub releases
+>
+> While this is convenient for development, for production environments consider:
+> - Pre-installing the driver from trusted sources
 > - Using `MCP_DRIVER_PATH` to point to a verified driver binary
 > - Auditing the downloaded binary before use
 
@@ -71,7 +87,7 @@ The server can be configured using environment variables:
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `MCP_AUTO_START` | Automatically manage browser/driver lifecycle | `false` |
-| `MCP_AUTO_DOWNLOAD_DRIVER` | Download ChromeDriver if not found (matches browser version) | `false` |
+| `MCP_AUTO_DOWNLOAD_DRIVER` | Download browser driver if not found (matches browser version) | `false` |
 | `MCP_CONNECTION_MODE` | Connection mode: `webdriver` or `cdp` | `webdriver` |
 | `MCP_HEADLESS` | Run browser in headless mode | `true` |
 | `MCP_OPEN_BROWSER_ON_START` | Open browser when MCP server starts | `false` |
@@ -81,7 +97,7 @@ The server can be configured using environment variables:
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `MCP_BROWSER_PATH` | Path to the browser binary | (auto-detect) |
-| `MCP_BROWSER_TYPE` | Browser type (currently only `chrome`) | `chrome` |
+| `MCP_BROWSER_TYPE` | Browser type: `chrome`, `edge`, `firefox`, or `safari` | `chrome` |
 | `MCP_SCREEN_WIDTH` | Screen width in pixels | `1280` |
 | `MCP_SCREEN_HEIGHT` | Screen height in pixels | `720` |
 | `MCP_INITIAL_URL` | Initial URL to load | `https://www.google.com` |
@@ -130,7 +146,7 @@ MCP_AUTO_DOWNLOAD_DRIVER=true \
 
 ### 2. Manual WebDriver Mode
 
-If you want to manage ChromeDriver yourself:
+If you want to manage the driver yourself:
 
 ```bash
 # Start ChromeDriver manually
@@ -143,15 +159,18 @@ MCP_WEBDRIVER_URL=http://localhost:9515 \
 
 ### 3. CDP Mode (Connect to Existing Browser)
 
-CDP (Chrome DevTools Protocol) mode allows direct browser control without WebDriver.
+CDP (Chrome DevTools Protocol) mode allows direct browser control without WebDriver. CDP mode is supported for **Chrome** and **Edge** browsers (both are Chromium-based).
 
-Connect to an already running Chrome browser with debugging enabled:
+Connect to an already running Chrome or Edge browser with debugging enabled:
 
 ```bash
 # Start Chrome with debugging enabled
 google-chrome --remote-debugging-port=9222
 
-# In another terminal, run the MCP server (connects directly via CDP - no ChromeDriver needed!)
+# Or start Edge with debugging enabled
+microsoft-edge --remote-debugging-port=9222
+
+# In another terminal, run the MCP server (connects directly via CDP - no driver needed!)
 MCP_CONNECTION_MODE=cdp \
 ./target/release/mcp-computer-use
 ```
@@ -159,12 +178,19 @@ MCP_CONNECTION_MODE=cdp \
 Or let the server manage everything automatically:
 
 ```bash
+# Chrome with CDP
+MCP_CONNECTION_MODE=cdp \
+MCP_AUTO_START=true \
+./target/release/mcp-computer-use
+
+# Edge with CDP
+MCP_BROWSER_TYPE=edge \
 MCP_CONNECTION_MODE=cdp \
 MCP_AUTO_START=true \
 ./target/release/mcp-computer-use
 ```
 
-> **Note:** CDP mode uses direct Chrome DevTools Protocol connection and does not require ChromeDriver. However, some tab management features are not available in CDP mode.
+> **Note:** CDP mode uses direct Chrome DevTools Protocol connection and does not require a WebDriver. However, some tab management features are not available in CDP mode. Firefox uses a different debugging protocol and is not supported in CDP mode.
 
 ### 4. Pre-Open Browser Mode
 

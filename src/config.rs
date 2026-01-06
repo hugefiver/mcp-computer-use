@@ -415,15 +415,6 @@ impl Config {
             };
         }
 
-        // Validate browser type - only Chrome is currently supported
-        if config.browser_type != BrowserType::Chrome {
-            anyhow::bail!(
-                "Only Chrome browser is currently supported. Got: {:?}. \
-                Please set MCP_BROWSER_TYPE=chrome or remove the environment variable.",
-                config.browser_type
-            );
-        }
-
         Ok(config)
     }
 
