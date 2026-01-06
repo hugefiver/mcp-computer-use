@@ -313,8 +313,11 @@ async fn download_chromedriver_async() -> Result<PathBuf> {
     let lock_file = fs::File::create(&lock_path)?;
 
     // RAII guard to ensure lock file cleanup on all exit paths
+    // We store the File object to keep the file descriptor valid for the entire lock duration
     struct LockGuard {
         lock_path: PathBuf,
+        #[allow(dead_code)] // File is kept alive to maintain lock
+        lock_file: fs::File,
         #[cfg(unix)]
         fd: std::os::unix::io::RawFd,
     }
@@ -326,6 +329,8 @@ async fn download_chromedriver_async() -> Result<PathBuf> {
             {
                 unsafe { libc::flock(self.fd, libc::LOCK_UN) };
             }
+            // On Windows, the lock is released when the file handle is closed (which happens
+            // when lock_file is dropped after this)
             // Remove the lock file
             let _ = fs::remove_file(&self.lock_path);
         }
@@ -358,16 +363,49 @@ async fn download_chromedriver_async() -> Result<PathBuf> {
 
         LockGuard {
             lock_path: lock_path.clone(),
+            lock_file,
             fd,
         }
     };
 
     #[cfg(windows)]
     let _lock_guard = {
-        // On Windows, just proceed - file creation will fail if another process has it locked
-        drop(&lock_file);
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Win32::Foundation::HANDLE;
+        use windows_sys::Win32::Storage::FileSystem::{
+            LockFileEx, LOCKFILE_EXCLUSIVE_LOCK, LOCKFILE_FAIL_IMMEDIATELY,
+        };
+
+        let handle = lock_file.as_raw_handle() as HANDLE;
+
+        // Try non-blocking lock first
+        let mut overlapped: windows_sys::Win32::System::IO::OVERLAPPED =
+            unsafe { std::mem::zeroed() };
+        let result = unsafe {
+            LockFileEx(
+                handle,
+                LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY,
+                0,
+                1,
+                0,
+                &mut overlapped,
+            )
+        };
+
+        if result == 0 {
+            // Lock failed, try blocking
+            info!("Another process is downloading ChromeDriver, waiting...");
+            let block_result =
+                unsafe { LockFileEx(handle, LOCKFILE_EXCLUSIVE_LOCK, 0, 1, 0, &mut overlapped) };
+            if block_result == 0 {
+                let err = std::io::Error::last_os_error();
+                return Err(anyhow::anyhow!("Failed to acquire download lock: {}", err));
+            }
+        }
+
         LockGuard {
             lock_path: lock_path.clone(),
+            lock_file,
         }
     };
 
