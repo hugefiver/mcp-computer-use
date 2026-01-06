@@ -258,7 +258,7 @@ fn download_chromedriver_sync() -> Result<PathBuf> {
                     // Multi-threaded runtime: block_in_place is safe
                     tokio::task::block_in_place(|| handle.block_on(download_chromedriver_async()))
                 }
-                _ => {
+                tokio::runtime::RuntimeFlavor::CurrentThread => {
                     // Single-threaded runtime: spawn an OS thread to avoid blocking the runtime
                     std::thread::spawn(move || {
                         let rt = tokio::runtime::Builder::new_current_thread()
@@ -268,7 +268,19 @@ fn download_chromedriver_sync() -> Result<PathBuf> {
                         rt.block_on(download_chromedriver_async())
                     })
                     .join()
-                    .map_err(|_| anyhow::anyhow!("Download thread panicked"))?
+                    .map_err(|_| anyhow::anyhow!("ChromeDriver download failed: thread panicked during execution"))?
+                }
+                // Handle any future runtime flavors by falling back to the safe OS thread approach
+                _ => {
+                    std::thread::spawn(move || {
+                        let rt = tokio::runtime::Builder::new_current_thread()
+                            .enable_all()
+                            .build()
+                            .with_context(|| "Failed to create runtime for driver download")?;
+                        rt.block_on(download_chromedriver_async())
+                    })
+                    .join()
+                    .map_err(|_| anyhow::anyhow!("ChromeDriver download failed: thread panicked during execution"))?
                 }
             }
         }
