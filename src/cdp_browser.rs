@@ -2,6 +2,7 @@
 //!
 //! This module provides direct browser control using CDP without requiring WebDriver.
 //! It uses the chromiumoxide library for native CDP communication.
+//! Supports Chrome and Edge browsers (both are Chromium-based).
 
 use crate::browser::EnvState;
 use crate::config::Config;

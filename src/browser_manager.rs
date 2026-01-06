@@ -43,6 +43,41 @@ const CHROME_PATHS: &[&str] = &[
     "/opt/google/chrome/chrome",
 ];
 
+/// Common Edge browser paths on different platforms.
+#[cfg(target_os = "windows")]
+const EDGE_PATHS: &[&str] = &[
+    r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+    r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+];
+
+#[cfg(target_os = "macos")]
+const EDGE_PATHS: &[&str] = &["/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge"];
+
+#[cfg(target_os = "linux")]
+const EDGE_PATHS: &[&str] = &[
+    "/usr/bin/microsoft-edge",
+    "/usr/bin/microsoft-edge-stable",
+    "/opt/microsoft/msedge/msedge",
+];
+
+/// Common Firefox browser paths on different platforms.
+#[cfg(target_os = "windows")]
+const FIREFOX_PATHS: &[&str] = &[
+    r"C:\Program Files\Mozilla Firefox\firefox.exe",
+    r"C:\Program Files (x86)\Mozilla Firefox\firefox.exe",
+];
+
+#[cfg(target_os = "macos")]
+const FIREFOX_PATHS: &[&str] = &["/Applications/Firefox.app/Contents/MacOS/firefox"];
+
+#[cfg(target_os = "linux")]
+const FIREFOX_PATHS: &[&str] = &[
+    "/usr/bin/firefox",
+    "/usr/bin/firefox-esr",
+    "/snap/bin/firefox",
+    "/opt/firefox/firefox",
+];
+
 /// Common ChromeDriver paths on different platforms.
 #[cfg(target_os = "windows")]
 const CHROMEDRIVER_PATHS: &[&str] = &[
@@ -64,6 +99,50 @@ const CHROMEDRIVER_PATHS: &[&str] = &[
     "/usr/local/bin/chromedriver",
     "/snap/bin/chromedriver",
     "/opt/chromedriver/chromedriver",
+];
+
+/// Common msedgedriver paths on different platforms.
+#[cfg(target_os = "windows")]
+const MSEDGEDRIVER_PATHS: &[&str] = &[
+    r"C:\msedgedriver\msedgedriver.exe",
+    r"C:\Program Files\msedgedriver\msedgedriver.exe",
+    r"C:\webdrivers\msedgedriver.exe",
+];
+
+#[cfg(target_os = "macos")]
+const MSEDGEDRIVER_PATHS: &[&str] = &[
+    "/usr/local/bin/msedgedriver",
+    "/opt/homebrew/bin/msedgedriver",
+    "/usr/bin/msedgedriver",
+];
+
+#[cfg(target_os = "linux")]
+const MSEDGEDRIVER_PATHS: &[&str] = &[
+    "/usr/bin/msedgedriver",
+    "/usr/local/bin/msedgedriver",
+    "/opt/msedgedriver/msedgedriver",
+];
+
+/// Common geckodriver paths on different platforms.
+#[cfg(target_os = "windows")]
+const GECKODRIVER_PATHS: &[&str] = &[
+    r"C:\geckodriver\geckodriver.exe",
+    r"C:\Program Files\geckodriver\geckodriver.exe",
+    r"C:\webdrivers\geckodriver.exe",
+];
+
+#[cfg(target_os = "macos")]
+const GECKODRIVER_PATHS: &[&str] = &[
+    "/usr/local/bin/geckodriver",
+    "/opt/homebrew/bin/geckodriver",
+    "/usr/bin/geckodriver",
+];
+
+#[cfg(target_os = "linux")]
+const GECKODRIVER_PATHS: &[&str] = &[
+    "/usr/bin/geckodriver",
+    "/usr/local/bin/geckodriver",
+    "/opt/geckodriver/geckodriver",
 ];
 
 /// Manages browser processes and provides auto-detection capabilities.
@@ -137,7 +216,7 @@ impl BrowserManager {
             BrowserType::Safari => "safari",
         };
 
-        // Try multiple browser names for Chrome
+        // Try multiple browser names
         let browser_names: Vec<&str> = match config.browser_type {
             BrowserType::Chrome => {
                 #[cfg(target_os = "windows")]
@@ -158,6 +237,34 @@ impl BrowserManager {
                     ]
                 }
             }
+            BrowserType::Edge => {
+                #[cfg(target_os = "windows")]
+                {
+                    vec!["msedge.exe"]
+                }
+                #[cfg(target_os = "macos")]
+                {
+                    vec!["Microsoft Edge"]
+                }
+                #[cfg(target_os = "linux")]
+                {
+                    vec!["microsoft-edge", "microsoft-edge-stable"]
+                }
+            }
+            BrowserType::Firefox => {
+                #[cfg(target_os = "windows")]
+                {
+                    vec!["firefox.exe"]
+                }
+                #[cfg(target_os = "macos")]
+                {
+                    vec!["firefox"]
+                }
+                #[cfg(target_os = "linux")]
+                {
+                    vec!["firefox", "firefox-esr"]
+                }
+            }
             _ => vec![browser_name],
         };
 
@@ -171,6 +278,8 @@ impl BrowserManager {
         // 3. Check common installation paths
         let common_paths: &[&str] = match config.browser_type {
             BrowserType::Chrome => CHROME_PATHS,
+            BrowserType::Edge => EDGE_PATHS,
+            BrowserType::Firefox => FIREFOX_PATHS,
             _ => &[],
         };
 
@@ -186,11 +295,22 @@ impl BrowserManager {
         #[cfg(target_os = "windows")]
         {
             if let Ok(local_app_data) = std::env::var("LOCALAPPDATA") {
-                let user_chrome =
-                    PathBuf::from(local_app_data).join(r"Google\Chrome\Application\chrome.exe");
-                if user_chrome.exists() {
-                    debug!("Found browser in user AppData: {:?}", user_chrome);
-                    return Ok(user_chrome);
+                let user_path = match config.browser_type {
+                    BrowserType::Chrome => Some(
+                        PathBuf::from(&local_app_data)
+                            .join(r"Google\Chrome\Application\chrome.exe"),
+                    ),
+                    BrowserType::Edge => Some(
+                        PathBuf::from(&local_app_data)
+                            .join(r"Microsoft\Edge\Application\msedge.exe"),
+                    ),
+                    _ => None,
+                };
+                if let Some(path) = user_path {
+                    if path.exists() {
+                        debug!("Found browser in user AppData: {:?}", path);
+                        return Ok(path);
+                    }
                 }
             }
         }
@@ -263,6 +383,8 @@ impl BrowserManager {
         // 3. Check common installation paths
         let common_paths: &[&str] = match config.browser_type {
             BrowserType::Chrome => CHROMEDRIVER_PATHS,
+            BrowserType::Edge => MSEDGEDRIVER_PATHS,
+            BrowserType::Firefox => GECKODRIVER_PATHS,
             _ => &[],
         };
 
@@ -281,18 +403,19 @@ impl BrowserManager {
         ))
     }
 
-    /// Launch Chrome browser with CDP (Chrome DevTools Protocol) enabled.
+    /// Launch browser with CDP (Chrome DevTools Protocol) enabled.
     ///
     /// Returns the CDP WebSocket URL for connecting.
     ///
     /// # Errors
-    /// Returns an error if the browser type is not Chrome, as CDP mode only supports Chrome.
+    /// Returns an error if the browser type is not Chrome or Edge, as CDP mode only supports Chromium-based browsers.
+    /// Firefox uses a different protocol and is not supported in CDP mode.
     pub fn launch_browser_with_cdp(&mut self, config: &Config) -> Result<String> {
-        // CDP mode only supports Chrome
-        if config.browser_type != BrowserType::Chrome {
+        // CDP mode only supports Chromium-based browsers (Chrome and Edge)
+        if config.browser_type != BrowserType::Chrome && config.browser_type != BrowserType::Edge {
             return Err(anyhow::anyhow!(
-                "CDP mode only supports Chrome browser. Current browser type: {:?}. \
-                Please set MCP_BROWSER_TYPE=chrome or use WebDriver mode.",
+                "CDP mode only supports Chrome and Edge browsers. Current browser type: {:?}. \
+                Please set MCP_BROWSER_TYPE=chrome or MCP_BROWSER_TYPE=edge, or use WebDriver mode.",
                 config.browser_type
             ));
         }
@@ -310,7 +433,7 @@ impl BrowserManager {
         // Essential CDP arguments
         cmd.arg(format!("--remote-debugging-port={}", self.cdp_port));
 
-        // Standard Chrome arguments
+        // Standard Chromium arguments (works for both Chrome and Edge)
         cmd.arg("--disable-extensions");
         cmd.arg("--disable-plugins");
         cmd.arg("--disable-dev-shm-usage");

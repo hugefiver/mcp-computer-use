@@ -2,7 +2,7 @@
 //!
 //! This module provides browser automation capabilities using WebDriver.
 
-use crate::config::{Config, ConnectionMode};
+use crate::config::{BrowserType, Config, ConnectionMode};
 use anyhow::Result;
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use serde::{Deserialize, Serialize};
@@ -337,12 +337,39 @@ impl BrowserController {
             return self.current_state().await;
         }
 
-        info!("Opening browser...");
+        info!("Opening {:?} browser...", self.config.browser_type);
 
         // Get the WebDriver URL
         let webdriver_url = self.config.effective_webdriver_url();
 
-        // Currently only Chrome is fully supported
+        // Create driver based on browser type
+        let driver = match self.config.browser_type {
+            BrowserType::Chrome => self.create_chrome_driver(&webdriver_url).await?,
+            BrowserType::Edge => self.create_edge_driver(&webdriver_url).await?,
+            BrowserType::Firefox => self.create_firefox_driver(&webdriver_url).await?,
+            BrowserType::Safari => self.create_safari_driver(&webdriver_url).await?,
+        };
+
+        // Set window size
+        if self.config.connection_mode != ConnectionMode::Cdp {
+            driver
+                .set_window_rect(0, 0, self.config.screen_width, self.config.screen_height)
+                .await?;
+
+            // Navigate to initial URL
+            driver.goto(&self.config.initial_url).await?;
+        }
+
+        *driver_guard = Some(driver);
+        self.was_opened.store(true, Ordering::SeqCst);
+        drop(driver_guard);
+
+        info!("Browser opened successfully");
+        self.current_state().await
+    }
+
+    /// Create a Chrome WebDriver.
+    async fn create_chrome_driver(&self, webdriver_url: &str) -> Result<WebDriver> {
         let mut caps = DesiredCapabilities::chrome();
 
         // In CDP mode, connect to existing browser via debuggerAddress
@@ -356,119 +383,184 @@ impl BrowserController {
             caps.add_experimental_option("debuggerAddress", debugger_address)?;
         } else {
             // WebDriver mode: configure browser options
-            if self.config.headless {
-                caps.add_arg("--headless=new")?;
-            }
-            caps.add_arg("--disable-extensions")?;
-            caps.add_arg("--disable-plugins")?;
-            caps.add_arg("--disable-dev-shm-usage")?;
-            caps.add_arg("--disable-background-networking")?;
-            caps.add_arg("--disable-default-apps")?;
-            caps.add_arg("--disable-sync")?;
-            caps.add_arg("--no-sandbox")?;
-            caps.add_arg(&format!(
-                "--window-size={},{}",
-                self.config.screen_width, self.config.screen_height
-            ))?;
-
-            // Undetected mode settings (inspired by patchright/undetected-chromedriver)
-            if self.config.undetected {
-                info!("Enabling undetected mode");
-                // Disable automation flags
-                caps.add_arg("--disable-blink-features=AutomationControlled")?;
-                // Remove automation indicators using add_exclude_switch
-                caps.add_exclude_switch("enable-automation")?;
-                caps.add_experimental_option("useAutomationExtension", false)?;
-                // Additional stealth options
-                caps.add_arg("--disable-infobars")?;
-                caps.add_arg("--disable-popup-blocking")?;
-                caps.add_arg("--disable-notifications")?;
-                // Set a realistic user agent
-                caps.add_arg(&format!("--user-agent={}", UNDETECTED_USER_AGENT))?;
-            }
-
-            if let Some(ref binary_path) = self.config.browser_binary_path {
-                caps.set_binary(binary_path.to_string_lossy().as_ref())?;
-            }
+            self.configure_chromium_caps(&mut caps)?;
         }
 
-        let driver = WebDriver::new(&webdriver_url, caps).await?;
+        let driver = WebDriver::new(webdriver_url, caps).await?;
 
-        // Apply additional stealth scripts if undetected mode is enabled (WebDriver mode only)
-        // Use CDP's Page.addScriptToEvaluateOnNewDocument to ensure script runs on every page
+        // Apply stealth scripts for Chrome if undetected mode is enabled
         if self.config.undetected && self.config.connection_mode != ConnectionMode::Cdp {
+            self.apply_chromium_stealth_scripts(&driver).await;
+        }
+
+        Ok(driver)
+    }
+
+    /// Create an Edge WebDriver.
+    async fn create_edge_driver(&self, webdriver_url: &str) -> Result<WebDriver> {
+        let mut caps = DesiredCapabilities::edge();
+
+        // In CDP mode, connect to existing browser via debuggerAddress
+        if self.config.connection_mode == ConnectionMode::Cdp {
+            let cdp_port = self.config.effective_cdp_port();
+            let debugger_address = format!("127.0.0.1:{}", cdp_port);
+            info!(
+                "CDP mode: connecting to existing Edge browser at {}",
+                debugger_address
+            );
+            caps.add_experimental_option("debuggerAddress", debugger_address)?;
+        } else {
+            // WebDriver mode: configure browser options (Edge uses same args as Chrome)
+            self.configure_chromium_caps(&mut caps)?;
+        }
+
+        let driver = WebDriver::new(webdriver_url, caps).await?;
+
+        // Apply stealth scripts for Edge if undetected mode is enabled
+        if self.config.undetected && self.config.connection_mode != ConnectionMode::Cdp {
+            self.apply_chromium_stealth_scripts(&driver).await;
+        }
+
+        Ok(driver)
+    }
+
+    /// Create a Firefox WebDriver.
+    async fn create_firefox_driver(&self, webdriver_url: &str) -> Result<WebDriver> {
+        let mut caps = DesiredCapabilities::firefox();
+
+        // Firefox headless mode
+        if self.config.headless {
+            caps.add_arg("--headless")?;
+        }
+
+        // Set window size via arguments for Firefox
+        caps.add_arg(&format!("--width={}", self.config.screen_width))?;
+        caps.add_arg(&format!("--height={}", self.config.screen_height))?;
+
+        // Set binary path if specified
+        if let Some(ref binary_path) = self.config.browser_binary_path {
+            caps.set_firefox_binary(binary_path.to_string_lossy().as_ref())?;
+        }
+
+        let driver = WebDriver::new(webdriver_url, caps).await?;
+
+        // Apply Firefox-specific stealth if undetected mode is enabled
+        if self.config.undetected {
             let stealth_script = r#"
                 Object.defineProperty(navigator, 'webdriver', {
                     get: () => undefined
                 });
-                
-                // Override plugins property to resemble a real browser
-                Object.defineProperty(navigator, 'plugins', {
-                    get: () => ([
-                        {
-                            name: 'Chrome PDF Plugin',
-                            filename: 'internal-pdf-viewer',
-                            description: 'Portable Document Format',
-                            length: 1
-                        },
-                        {
-                            name: 'Chrome PDF Viewer',
-                            filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai',
-                            description: '',
-                            length: 1
-                        }
-                    ])
-                });
-                
-                // Override permissions query
-                const originalQuery = window.navigator.permissions.query;
-                window.navigator.permissions.query = (parameters) => (
-                    parameters.name === 'notifications' ?
-                    Promise.resolve({ state: Notification.permission }) :
-                    originalQuery(parameters)
-                );
-                
-                // Overwrite the headless check
-                Object.defineProperty(navigator, 'languages', {
-                    get: () => ['en-US', 'en']
-                });
             "#;
-
-            // Use CDP to add script that runs on every new document
-            let dev_tools = ChromeDevTools::new(driver.handle.clone());
-            let cdp_cmd = serde_json::json!({
-                "source": stealth_script
-            });
-            if let Err(e) = dev_tools
-                .execute_cdp_with_params("Page.addScriptToEvaluateOnNewDocument", cdp_cmd)
-                .await
-            {
-                warn!(
-                    "Failed to add stealth script via CDP (undetected mode may not work fully): {}",
-                    e
-                );
+            if let Err(e) = driver.execute(stealth_script, vec![]).await {
+                warn!("Failed to apply Firefox stealth script: {}", e);
             }
-
-            // Also execute immediately for the current page
-            driver.execute(stealth_script, vec![]).await?;
         }
 
-        // Set window size (only in WebDriver mode, CDP mode browser is already configured)
-        if self.config.connection_mode != ConnectionMode::Cdp {
-            driver
-                .set_window_rect(0, 0, self.config.screen_width, self.config.screen_height)
-                .await?;
+        Ok(driver)
+    }
 
-            // Navigate to initial URL (only in WebDriver mode)
-            driver.goto(&self.config.initial_url).await?;
+    /// Create a Safari WebDriver.
+    async fn create_safari_driver(&self, webdriver_url: &str) -> Result<WebDriver> {
+        let caps = DesiredCapabilities::safari();
+        // Safari has limited customization options
+        let driver = WebDriver::new(webdriver_url, caps).await?;
+        Ok(driver)
+    }
+
+    /// Configure Chromium-based browser capabilities (Chrome/Edge).
+    fn configure_chromium_caps<C: ChromiumLikeCapabilities>(&self, caps: &mut C) -> Result<()> {
+        if self.config.headless {
+            caps.add_arg("--headless=new")?;
+        }
+        caps.add_arg("--disable-extensions")?;
+        caps.add_arg("--disable-plugins")?;
+        caps.add_arg("--disable-dev-shm-usage")?;
+        caps.add_arg("--disable-background-networking")?;
+        caps.add_arg("--disable-default-apps")?;
+        caps.add_arg("--disable-sync")?;
+        caps.add_arg("--no-sandbox")?;
+        caps.add_arg(&format!(
+            "--window-size={},{}",
+            self.config.screen_width, self.config.screen_height
+        ))?;
+
+        // Undetected mode settings (inspired by patchright/undetected-chromedriver)
+        if self.config.undetected {
+            info!("Enabling undetected mode");
+            caps.add_arg("--disable-blink-features=AutomationControlled")?;
+            caps.add_exclude_switch("enable-automation")?;
+            caps.add_experimental_option("useAutomationExtension", false)?;
+            caps.add_arg("--disable-infobars")?;
+            caps.add_arg("--disable-popup-blocking")?;
+            caps.add_arg("--disable-notifications")?;
+            caps.add_arg(&format!("--user-agent={}", UNDETECTED_USER_AGENT))?;
         }
 
-        *driver_guard = Some(driver);
-        self.was_opened.store(true, Ordering::SeqCst);
-        drop(driver_guard);
+        if let Some(ref binary_path) = self.config.browser_binary_path {
+            caps.set_binary(binary_path.to_string_lossy().as_ref())?;
+        }
 
-        info!("Browser opened successfully");
-        self.current_state().await
+        Ok(())
+    }
+
+    /// Apply stealth scripts for Chromium-based browsers.
+    async fn apply_chromium_stealth_scripts(&self, driver: &WebDriver) {
+        let stealth_script = r#"
+            Object.defineProperty(navigator, 'webdriver', {
+                get: () => undefined
+            });
+            
+            // Override plugins property to resemble a real browser
+            Object.defineProperty(navigator, 'plugins', {
+                get: () => ([
+                    {
+                        name: 'Chrome PDF Plugin',
+                        filename: 'internal-pdf-viewer',
+                        description: 'Portable Document Format',
+                        length: 1
+                    },
+                    {
+                        name: 'Chrome PDF Viewer',
+                        filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai',
+                        description: '',
+                        length: 1
+                    }
+                ])
+            });
+            
+            // Override permissions query
+            const originalQuery = window.navigator.permissions.query;
+            window.navigator.permissions.query = (parameters) => (
+                parameters.name === 'notifications' ?
+                Promise.resolve({ state: Notification.permission }) :
+                originalQuery(parameters)
+            );
+            
+            // Overwrite the headless check
+            Object.defineProperty(navigator, 'languages', {
+                get: () => ['en-US', 'en']
+            });
+        "#;
+
+        // Use CDP to add script that runs on every new document
+        let dev_tools = ChromeDevTools::new(driver.handle.clone());
+        let cdp_cmd = serde_json::json!({
+            "source": stealth_script
+        });
+        if let Err(e) = dev_tools
+            .execute_cdp_with_params("Page.addScriptToEvaluateOnNewDocument", cdp_cmd)
+            .await
+        {
+            warn!(
+                "Failed to add stealth script via CDP (undetected mode may not work fully): {}",
+                e
+            );
+        }
+
+        // Also execute immediately for the current page
+        if let Err(e) = driver.execute(stealth_script, vec![]).await {
+            warn!("Failed to execute stealth script: {}", e);
+        }
     }
 
     /// Close the browser.
