@@ -243,13 +243,19 @@ fn get_cache_dir() -> Result<PathBuf> {
 fn download_chromedriver_sync() -> Result<PathBuf> {
     info!("Downloading ChromeDriver (this may take a while)...");
 
-    // Create a runtime for the async download
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .with_context(|| "Failed to create runtime for driver download")?;
+    // Check if we're already inside a Tokio runtime
+    if let Ok(handle) = tokio::runtime::Handle::try_current() {
+        // We're inside an existing runtime, use block_in_place to avoid nested runtime panic
+        tokio::task::block_in_place(|| handle.block_on(download_chromedriver_async()))
+    } else {
+        // Not in a runtime, create a new one for the async download
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .with_context(|| "Failed to create runtime for driver download")?;
 
-    runtime.block_on(download_chromedriver_async())
+        runtime.block_on(download_chromedriver_async())
+    }
 }
 
 /// Download ChromeDriver asynchronously.
