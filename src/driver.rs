@@ -240,16 +240,66 @@ fn get_cache_dir() -> Result<PathBuf> {
 }
 
 /// Download ChromeDriver synchronously.
+///
+/// This function handles being called from different contexts:
+/// - From outside any runtime: creates a new runtime
+/// - From a multi-threaded runtime: uses block_in_place
+/// - From a single-threaded runtime: spawns an OS thread to avoid blocking
 fn download_chromedriver_sync() -> Result<PathBuf> {
     info!("Downloading ChromeDriver (this may take a while)...");
 
-    // Create a runtime for the async download
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .with_context(|| "Failed to create runtime for driver download")?;
+    // Check if we're already inside a Tokio runtime
+    match tokio::runtime::Handle::try_current() {
+        Ok(handle) => {
+            // We're inside an existing runtime
+            // Check runtime flavor to determine safe blocking strategy
+            match handle.runtime_flavor() {
+                tokio::runtime::RuntimeFlavor::MultiThread => {
+                    // Multi-threaded runtime: block_in_place is safe
+                    tokio::task::block_in_place(|| handle.block_on(download_chromedriver_async()))
+                }
+                tokio::runtime::RuntimeFlavor::CurrentThread => {
+                    // Single-threaded runtime: spawn an OS thread to avoid blocking the runtime
+                    std::thread::spawn(move || {
+                        let rt = tokio::runtime::Builder::new_current_thread()
+                            .enable_all()
+                            .build()
+                            .with_context(|| "Failed to create runtime for driver download")?;
+                        rt.block_on(download_chromedriver_async())
+                    })
+                    .join()
+                    .map_err(|_| {
+                        anyhow::anyhow!(
+                            "ChromeDriver download failed: thread panicked during execution"
+                        )
+                    })?
+                }
+                // Handle any future runtime flavors by falling back to the safe OS thread approach
+                _ => std::thread::spawn(move || {
+                    let rt = tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()
+                        .with_context(|| "Failed to create runtime for driver download")?;
+                    rt.block_on(download_chromedriver_async())
+                })
+                .join()
+                .map_err(|_| {
+                    anyhow::anyhow!(
+                        "ChromeDriver download failed: thread panicked during execution"
+                    )
+                })?,
+            }
+        }
+        Err(_) => {
+            // Not in a runtime, create a new one for the async download
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .with_context(|| "Failed to create runtime for driver download")?;
 
-    runtime.block_on(download_chromedriver_async())
+            runtime.block_on(download_chromedriver_async())
+        }
+    }
 }
 
 /// Download ChromeDriver asynchronously.
@@ -500,5 +550,88 @@ impl Default for DriverManager {
 impl Drop for DriverManager {
     fn drop(&mut self) {
         self.stop();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_driver_manager_creation() {
+        let manager = DriverManager::new();
+        assert!(manager.driver_process.is_none());
+        assert!(manager.driver_path.is_none());
+        assert_eq!(manager.port, crate::config::DEFAULT_DRIVER_PORT);
+    }
+
+    #[test]
+    fn test_get_platform() {
+        let platform = get_platform();
+        // Platform should be a non-empty string
+        assert!(!platform.is_empty());
+        // Platform should be one of the known values
+        let valid_platforms = ["win64", "win32", "mac-arm64", "mac-x64", "linux64"];
+        assert!(
+            valid_platforms.contains(&platform),
+            "Platform '{}' should be one of: {:?}",
+            platform,
+            valid_platforms
+        );
+    }
+
+    #[test]
+    fn test_get_chromedriver_exe_name() {
+        let exe_name = get_chromedriver_exe_name();
+        #[cfg(target_os = "windows")]
+        assert_eq!(exe_name, "chromedriver.exe");
+        #[cfg(not(target_os = "windows"))]
+        assert_eq!(exe_name, "chromedriver");
+    }
+
+    #[test]
+    fn test_runtime_detection_outside_runtime() {
+        // When called outside a runtime, try_current should return Err
+        // This test verifies the fallback path is correctly triggered
+        let result = tokio::runtime::Handle::try_current();
+        assert!(
+            result.is_err(),
+            "Should not be inside a runtime in regular test"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_runtime_detection_inside_multi_thread_runtime() {
+        // When called inside a multi-threaded runtime, try_current should return Ok
+        let result = tokio::runtime::Handle::try_current();
+        assert!(
+            result.is_ok(),
+            "Should detect runtime when inside async context"
+        );
+
+        let handle = result.unwrap();
+        // This test uses multi_thread flavor explicitly
+        assert_eq!(
+            handle.runtime_flavor(),
+            tokio::runtime::RuntimeFlavor::MultiThread,
+            "Should detect multi-threaded runtime"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn test_runtime_detection_inside_current_thread_runtime() {
+        // When called inside a current_thread runtime, try_current should return Ok
+        let result = tokio::runtime::Handle::try_current();
+        assert!(
+            result.is_ok(),
+            "Should detect runtime when inside async context"
+        );
+
+        let handle = result.unwrap();
+        assert_eq!(
+            handle.runtime_flavor(),
+            tokio::runtime::RuntimeFlavor::CurrentThread,
+            "Should detect current_thread runtime"
+        );
     }
 }
