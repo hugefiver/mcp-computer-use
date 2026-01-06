@@ -16,6 +16,11 @@ rmcp = { version = "0.10", features = ["server", "transport-io", "transport-sse-
 # Browser automation
 thirtyfour = { version = "0.36", features = ["tokio-multi-threaded"] }
 
+# ChromeDriver download support
+zip = "2.1"
+dirs = "6.0"
+reqwest = { version = "0.12", features = ["json"] }
+
 # HTTP server for streamable HTTP transport
 axum = { version = "0.8", optional = true }
 tower = { version = "0.5", optional = true }
@@ -49,6 +54,14 @@ tokio-util = { version = "0.7", features = ["rt"] }
 
 # Schema generation
 schemars = { version = "1.0", features = ["chrono04"] }
+
+# File locking for concurrent downloads (Unix only)
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+# File locking for concurrent downloads (Windows only)
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_IO"] }
 
 [features]
 default = ["http-server"]

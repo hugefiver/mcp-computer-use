@@ -196,7 +196,7 @@ impl BrowserManager {
         }
 
         Err(anyhow::anyhow!(
-            "Could not find {} browser. Please install it or set MCP_BROWSER_BINARY_PATH.",
+            "Could not find {} browser. Please install it or set MCP_BROWSER_PATH.",
             browser_name
         ))
     }
@@ -298,7 +298,7 @@ impl BrowserManager {
         }
 
         let browser_path = self.find_browser(config)?;
-        self.cdp_port = config.cdp_port;
+        self.cdp_port = config.effective_cdp_port();
 
         info!(
             "Launching browser with CDP on port {}: {:?}",

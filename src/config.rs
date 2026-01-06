@@ -6,6 +6,15 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::path::PathBuf;
 
+/// Default WebDriver port (ChromeDriver default).
+pub const DEFAULT_DRIVER_PORT: u16 = 9515;
+
+/// Default CDP (Chrome DevTools Protocol) port.
+pub const DEFAULT_CDP_PORT: u16 = 9222;
+
+/// Default HTTP server port.
+pub const DEFAULT_HTTP_PORT: u16 = 8080;
+
 /// Transport mode for the MCP server.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
@@ -37,8 +46,9 @@ pub struct Config {
     pub browser_binary_path: Option<PathBuf>,
 
     /// WebDriver server URL (e.g., "http://localhost:9515" for ChromeDriver).
-    /// If not set, defaults to "http://localhost:9515".
-    pub webdriver_url: String,
+    /// If not set and auto_launch is false, defaults to "http://localhost:9515".
+    /// If auto_launch is true, this is automatically determined.
+    pub webdriver_url: Option<String>,
 
     /// Browser type to use.
     pub browser_type: BrowserType,
@@ -66,20 +76,20 @@ pub struct Config {
     pub transport_mode: TransportMode,
 
     /// HTTP server port (only used when transport_mode is Http).
-    pub http_port: u16,
+    /// If not set, defaults to 8080.
+    pub http_port: Option<u16>,
 
     /// HTTP server host (only used when transport_mode is Http).
     pub http_host: String,
 
-    /// Whether to auto-launch the browser driver.
-    pub auto_launch_driver: bool,
-
     /// Path to the browser driver executable.
-    /// If not set, will try to find the driver in PATH or common locations.
+    /// If not set, will try to find the driver in PATH or common locations,
+    /// or download it if auto_download_driver is enabled.
     pub driver_path: Option<PathBuf>,
 
     /// Port to use for auto-launched driver.
-    pub driver_port: u16,
+    /// If not set, defaults to 9515.
+    pub driver_port: Option<u16>,
 
     /// Whether to use undetected/stealth mode.
     pub undetected: bool,
@@ -89,13 +99,17 @@ pub struct Config {
 
     /// CDP (Chrome DevTools Protocol) port for direct browser connection.
     /// Only used when connection_mode is Cdp.
-    pub cdp_port: u16,
+    /// If not set, defaults to 9222.
+    pub cdp_port: Option<u16>,
 
-    /// Whether to auto-launch browser when using CDP mode.
-    /// If true, will launch Chrome with remote debugging enabled.
-    pub auto_launch_browser: bool,
+    /// Whether to automatically manage browser and driver lifecycle.
+    /// When true:
+    /// - In WebDriver mode: auto-launches ChromeDriver (downloads if needed)
+    /// - In CDP mode: auto-launches browser with remote debugging enabled
+    pub auto_start: bool,
 
     /// Whether to auto-download the browser driver if not found.
+    /// Only effective when auto_start is true.
     pub auto_download_driver: bool,
 }
 
@@ -103,7 +117,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             browser_binary_path: None,
-            webdriver_url: "http://localhost:9515".to_string(),
+            webdriver_url: None, // Empty by default, determined at runtime
             browser_type: BrowserType::Chrome,
             screen_width: 1280,
             screen_height: 720,
@@ -113,17 +127,44 @@ impl Default for Config {
             disabled_tools: HashSet::new(),
             highlight_mouse: false,
             transport_mode: TransportMode::Stdio,
-            http_port: 8080,
+            http_port: None, // Fallback to DEFAULT_HTTP_PORT when needed
             http_host: "127.0.0.1".to_string(),
-            auto_launch_driver: false,
             driver_path: None,
-            driver_port: 9515,
+            driver_port: None, // Fallback to DEFAULT_DRIVER_PORT when needed
             undetected: false,
             connection_mode: ConnectionMode::WebDriver,
-            cdp_port: 9222,
-            auto_launch_browser: false,
+            cdp_port: None, // Fallback to DEFAULT_CDP_PORT when needed
+            auto_start: false,
             auto_download_driver: false,
         }
+    }
+}
+
+impl Config {
+    /// Get the effective WebDriver URL.
+    /// Returns the configured URL or falls back to default based on driver_port.
+    pub fn effective_webdriver_url(&self) -> String {
+        self.webdriver_url.clone().unwrap_or_else(|| {
+            format!(
+                "http://localhost:{}",
+                self.driver_port.unwrap_or(DEFAULT_DRIVER_PORT)
+            )
+        })
+    }
+
+    /// Get the effective driver port.
+    pub fn effective_driver_port(&self) -> u16 {
+        self.driver_port.unwrap_or(DEFAULT_DRIVER_PORT)
+    }
+
+    /// Get the effective CDP port.
+    pub fn effective_cdp_port(&self) -> u16 {
+        self.cdp_port.unwrap_or(DEFAULT_CDP_PORT)
+    }
+
+    /// Get the effective HTTP port.
+    pub fn effective_http_port(&self) -> u16 {
+        self.http_port.unwrap_or(DEFAULT_HTTP_PORT)
     }
 }
 
@@ -144,12 +185,12 @@ impl Config {
         let mut config = Config::default();
 
         // Load from environment variables
-        if let Ok(path) = std::env::var("MCP_BROWSER_BINARY_PATH") {
+        if let Ok(path) = std::env::var("MCP_BROWSER_PATH") {
             config.browser_binary_path = Some(PathBuf::from(path));
         }
 
         if let Ok(url) = std::env::var("MCP_WEBDRIVER_URL") {
-            config.webdriver_url = url;
+            config.webdriver_url = Some(url);
         }
 
         if let Ok(browser_type) = std::env::var("MCP_BROWSER_TYPE") {
@@ -199,14 +240,11 @@ impl Config {
         }
 
         if let Ok(headless) = std::env::var("MCP_HEADLESS") {
-            config.headless = match headless.parse() {
-                Ok(h) => h,
-                Err(e) => {
-                    tracing::warn!(
-                        "Invalid MCP_HEADLESS '{}': {}, using default true",
-                        headless,
-                        e
-                    );
+            config.headless = match headless.to_lowercase().as_str() {
+                "true" | "1" | "yes" => true,
+                "false" | "0" | "no" => false,
+                _ => {
+                    tracing::warn!("Invalid MCP_HEADLESS '{}', using default true", headless);
                     true
                 }
             };
@@ -221,13 +259,13 @@ impl Config {
         }
 
         if let Ok(highlight) = std::env::var("MCP_HIGHLIGHT_MOUSE") {
-            config.highlight_mouse = match highlight.parse() {
-                Ok(h) => h,
-                Err(e) => {
+            config.highlight_mouse = match highlight.to_lowercase().as_str() {
+                "true" | "1" | "yes" => true,
+                "false" | "0" | "no" => false,
+                _ => {
                     tracing::warn!(
-                        "Invalid MCP_HIGHLIGHT_MOUSE '{}': {}, using default false",
-                        highlight,
-                        e
+                        "Invalid MCP_HIGHLIGHT_MOUSE '{}', using default false",
+                        highlight
                     );
                     false
                 }
@@ -248,14 +286,10 @@ impl Config {
 
         if let Ok(port) = std::env::var("MCP_HTTP_PORT") {
             config.http_port = match port.parse() {
-                Ok(p) => p,
+                Ok(p) => Some(p),
                 Err(e) => {
-                    tracing::warn!(
-                        "Invalid MCP_HTTP_PORT '{}': {}, using default 8080",
-                        port,
-                        e
-                    );
-                    8080
+                    tracing::warn!("Invalid MCP_HTTP_PORT '{}': {}, will use default", port, e);
+                    None
                 }
             };
         }
@@ -264,48 +298,33 @@ impl Config {
             config.http_host = host;
         }
 
-        // Auto-launch driver configuration
-        if let Ok(auto_launch) = std::env::var("MCP_AUTO_LAUNCH_DRIVER") {
-            config.auto_launch_driver = match auto_launch.parse() {
-                Ok(a) => a,
-                Err(e) => {
-                    tracing::warn!(
-                        "Invalid MCP_AUTO_LAUNCH_DRIVER '{}': {}, using default false",
-                        auto_launch,
-                        e
-                    );
-                    false
-                }
-            };
-        }
-
         if let Ok(path) = std::env::var("MCP_DRIVER_PATH") {
             config.driver_path = Some(PathBuf::from(path));
         }
 
         if let Ok(port) = std::env::var("MCP_DRIVER_PORT") {
             config.driver_port = match port.parse() {
-                Ok(p) => p,
+                Ok(p) => Some(p),
                 Err(e) => {
                     tracing::warn!(
-                        "Invalid MCP_DRIVER_PORT '{}': {}, using default 9515",
+                        "Invalid MCP_DRIVER_PORT '{}': {}, will use default",
                         port,
                         e
                     );
-                    9515
+                    None
                 }
             };
         }
 
         // Undetected mode configuration
         if let Ok(undetected) = std::env::var("MCP_UNDETECTED") {
-            config.undetected = match undetected.parse() {
-                Ok(u) => u,
-                Err(e) => {
+            config.undetected = match undetected.to_lowercase().as_str() {
+                "true" | "1" | "yes" => true,
+                "false" | "0" | "no" => false,
+                _ => {
                     tracing::warn!(
-                        "Invalid MCP_UNDETECTED '{}': {}, using default false",
-                        undetected,
-                        e
+                        "Invalid MCP_UNDETECTED '{}', using default false",
+                        undetected
                     );
                     false
                 }
@@ -330,23 +349,23 @@ impl Config {
         // CDP port configuration
         if let Ok(port) = std::env::var("MCP_CDP_PORT") {
             config.cdp_port = match port.parse() {
-                Ok(p) => p,
+                Ok(p) => Some(p),
                 Err(e) => {
-                    tracing::warn!("Invalid MCP_CDP_PORT '{}': {}, using default 9222", port, e);
-                    9222
+                    tracing::warn!("Invalid MCP_CDP_PORT '{}': {}, will use default", port, e);
+                    None
                 }
             };
         }
 
-        // Auto-launch browser configuration
-        if let Ok(auto_launch) = std::env::var("MCP_AUTO_LAUNCH_BROWSER") {
-            config.auto_launch_browser = match auto_launch.parse() {
-                Ok(a) => a,
-                Err(e) => {
+        // Auto-start configuration (unified flag for both driver and browser)
+        if let Ok(auto_start) = std::env::var("MCP_AUTO_START") {
+            config.auto_start = match auto_start.to_lowercase().as_str() {
+                "true" | "1" | "yes" => true,
+                "false" | "0" | "no" => false,
+                _ => {
                     tracing::warn!(
-                        "Invalid MCP_AUTO_LAUNCH_BROWSER '{}': {}, using default false",
-                        auto_launch,
-                        e
+                        "Invalid MCP_AUTO_START '{}', using default false",
+                        auto_start
                     );
                     false
                 }
@@ -355,13 +374,13 @@ impl Config {
 
         // Auto-download driver configuration
         if let Ok(auto_download) = std::env::var("MCP_AUTO_DOWNLOAD_DRIVER") {
-            config.auto_download_driver = match auto_download.parse() {
-                Ok(a) => a,
-                Err(e) => {
+            config.auto_download_driver = match auto_download.to_lowercase().as_str() {
+                "true" | "1" | "yes" => true,
+                "false" | "0" | "no" => false,
+                _ => {
                     tracing::warn!(
-                        "Invalid MCP_AUTO_DOWNLOAD_DRIVER '{}': {}, using default false",
-                        auto_download,
-                        e
+                        "Invalid MCP_AUTO_DOWNLOAD_DRIVER '{}', using default false",
+                        auto_download
                     );
                     false
                 }
@@ -370,7 +389,7 @@ impl Config {
 
         // Validate browser type - only Chrome is currently supported
         if config.browser_type != BrowserType::Chrome {
-            panic!(
+            anyhow::bail!(
                 "Only Chrome browser is currently supported. Got: {:?}. \
                 Please set MCP_BROWSER_TYPE=chrome or remove the environment variable.",
                 config.browser_type

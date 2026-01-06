@@ -2,7 +2,7 @@
 //!
 //! This module provides browser automation capabilities using WebDriver.
 
-use crate::config::Config;
+use crate::config::{Config, ConnectionMode};
 use anyhow::Result;
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use serde::{Deserialize, Serialize};
@@ -339,48 +339,64 @@ impl BrowserController {
 
         info!("Opening browser...");
 
+        // Get the WebDriver URL
+        let webdriver_url = self.config.effective_webdriver_url();
+
         // Currently only Chrome is fully supported
         let mut caps = DesiredCapabilities::chrome();
-        if self.config.headless {
-            caps.add_arg("--headless=new")?;
+
+        // In CDP mode, connect to existing browser via debuggerAddress
+        if self.config.connection_mode == ConnectionMode::Cdp {
+            let cdp_port = self.config.effective_cdp_port();
+            let debugger_address = format!("127.0.0.1:{}", cdp_port);
+            info!(
+                "CDP mode: connecting to existing browser at {}",
+                debugger_address
+            );
+            caps.add_experimental_option("debuggerAddress", debugger_address)?;
+        } else {
+            // WebDriver mode: configure browser options
+            if self.config.headless {
+                caps.add_arg("--headless=new")?;
+            }
+            caps.add_arg("--disable-extensions")?;
+            caps.add_arg("--disable-plugins")?;
+            caps.add_arg("--disable-dev-shm-usage")?;
+            caps.add_arg("--disable-background-networking")?;
+            caps.add_arg("--disable-default-apps")?;
+            caps.add_arg("--disable-sync")?;
+            caps.add_arg("--no-sandbox")?;
+            caps.add_arg(&format!(
+                "--window-size={},{}",
+                self.config.screen_width, self.config.screen_height
+            ))?;
+
+            // Undetected mode settings (inspired by patchright/undetected-chromedriver)
+            if self.config.undetected {
+                info!("Enabling undetected mode");
+                // Disable automation flags
+                caps.add_arg("--disable-blink-features=AutomationControlled")?;
+                // Remove automation indicators using add_exclude_switch
+                caps.add_exclude_switch("enable-automation")?;
+                caps.add_experimental_option("useAutomationExtension", false)?;
+                // Additional stealth options
+                caps.add_arg("--disable-infobars")?;
+                caps.add_arg("--disable-popup-blocking")?;
+                caps.add_arg("--disable-notifications")?;
+                // Set a realistic user agent
+                caps.add_arg(&format!("--user-agent={}", UNDETECTED_USER_AGENT))?;
+            }
+
+            if let Some(ref binary_path) = self.config.browser_binary_path {
+                caps.set_binary(binary_path.to_string_lossy().as_ref())?;
+            }
         }
-        caps.add_arg("--disable-extensions")?;
-        caps.add_arg("--disable-plugins")?;
-        caps.add_arg("--disable-dev-shm-usage")?;
-        caps.add_arg("--disable-background-networking")?;
-        caps.add_arg("--disable-default-apps")?;
-        caps.add_arg("--disable-sync")?;
-        caps.add_arg("--no-sandbox")?;
-        caps.add_arg(&format!(
-            "--window-size={},{}",
-            self.config.screen_width, self.config.screen_height
-        ))?;
 
-        // Undetected mode settings (inspired by patchright/undetected-chromedriver)
-        if self.config.undetected {
-            info!("Enabling undetected mode");
-            // Disable automation flags
-            caps.add_arg("--disable-blink-features=AutomationControlled")?;
-            // Remove automation indicators using add_exclude_switch
-            caps.add_exclude_switch("enable-automation")?;
-            caps.add_experimental_option("useAutomationExtension", false)?;
-            // Additional stealth options
-            caps.add_arg("--disable-infobars")?;
-            caps.add_arg("--disable-popup-blocking")?;
-            caps.add_arg("--disable-notifications")?;
-            // Set a realistic user agent
-            caps.add_arg(&format!("--user-agent={}", UNDETECTED_USER_AGENT))?;
-        }
+        let driver = WebDriver::new(&webdriver_url, caps).await?;
 
-        if let Some(ref binary_path) = self.config.browser_binary_path {
-            caps.set_binary(binary_path.to_string_lossy().as_ref())?;
-        }
-
-        let driver = WebDriver::new(&self.config.webdriver_url, caps).await?;
-
-        // Apply additional stealth scripts if undetected mode is enabled
+        // Apply additional stealth scripts if undetected mode is enabled (WebDriver mode only)
         // Use CDP's Page.addScriptToEvaluateOnNewDocument to ensure script runs on every page
-        if self.config.undetected {
+        if self.config.undetected && self.config.connection_mode != ConnectionMode::Cdp {
             let stealth_script = r#"
                 Object.defineProperty(navigator, 'webdriver', {
                     get: () => undefined
@@ -423,21 +439,29 @@ impl BrowserController {
             let cdp_cmd = serde_json::json!({
                 "source": stealth_script
             });
-            let _ = dev_tools
+            if let Err(e) = dev_tools
                 .execute_cdp_with_params("Page.addScriptToEvaluateOnNewDocument", cdp_cmd)
-                .await;
+                .await
+            {
+                warn!(
+                    "Failed to add stealth script via CDP (undetected mode may not work fully): {}",
+                    e
+                );
+            }
 
             // Also execute immediately for the current page
             driver.execute(stealth_script, vec![]).await?;
         }
 
-        // Set window size
-        driver
-            .set_window_rect(0, 0, self.config.screen_width, self.config.screen_height)
-            .await?;
+        // Set window size (only in WebDriver mode, CDP mode browser is already configured)
+        if self.config.connection_mode != ConnectionMode::Cdp {
+            driver
+                .set_window_rect(0, 0, self.config.screen_width, self.config.screen_height)
+                .await?;
 
-        // Navigate to initial URL
-        driver.goto(&self.config.initial_url).await?;
+            // Navigate to initial URL (only in WebDriver mode)
+            driver.goto(&self.config.initial_url).await?;
+        }
 
         *driver_guard = Some(driver);
         self.was_opened.store(true, Ordering::SeqCst);
