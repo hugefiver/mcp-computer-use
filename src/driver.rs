@@ -304,43 +304,77 @@ async fn download_chromedriver_async() -> Result<PathBuf> {
         fs::create_dir_all(&version_dir)?;
     }
 
-    // Check if already downloaded
     let exe_name = get_chromedriver_exe_name();
     let exe_path = version_dir.join(exe_name);
-    if exe_path.exists() {
-        info!("ChromeDriver already cached at: {:?}", exe_path);
-        return Ok(exe_path);
-    }
 
     // Use a lock file to prevent concurrent downloads
+    // The lock file is cleaned up when _lock_guard goes out of scope (including on errors)
     let lock_path = version_dir.join(".download.lock");
     let lock_file = fs::File::create(&lock_path)?;
 
-    // Try to acquire exclusive lock (non-blocking check first)
-    use std::io::ErrorKind;
+    // RAII guard to ensure lock file cleanup on all exit paths
+    struct LockGuard {
+        lock_path: PathBuf,
+        #[cfg(unix)]
+        fd: std::os::unix::io::RawFd,
+    }
+
+    impl Drop for LockGuard {
+        fn drop(&mut self) {
+            // Release the lock explicitly on Unix
+            #[cfg(unix)]
+            {
+                unsafe { libc::flock(self.fd, libc::LOCK_UN) };
+            }
+            // Remove the lock file
+            let _ = fs::remove_file(&self.lock_path);
+        }
+    }
+
     #[cfg(unix)]
-    {
+    let _lock_guard = {
         use std::os::unix::io::AsRawFd;
         let fd = lock_file.as_raw_fd();
+
+        // Try to acquire exclusive lock (non-blocking check first)
         let result = unsafe { libc::flock(fd, libc::LOCK_EX | libc::LOCK_NB) };
         if result != 0 {
             let err = std::io::Error::last_os_error();
-            if err.kind() == ErrorKind::WouldBlock {
+            if err.kind() == std::io::ErrorKind::WouldBlock {
                 info!("Another process is downloading ChromeDriver, waiting...");
                 // Block until lock is available
-                unsafe { libc::flock(fd, libc::LOCK_EX) };
-                // Check if download completed while we were waiting
-                if exe_path.exists() {
-                    info!("ChromeDriver already cached at: {:?}", exe_path);
-                    return Ok(exe_path);
+                let block_result = unsafe { libc::flock(fd, libc::LOCK_EX) };
+                if block_result != 0 {
+                    let block_err = std::io::Error::last_os_error();
+                    return Err(anyhow::anyhow!(
+                        "Failed to acquire download lock: {}",
+                        block_err
+                    ));
                 }
+            } else {
+                return Err(anyhow::anyhow!("Failed to acquire download lock: {}", err));
             }
         }
-    }
+
+        LockGuard {
+            lock_path: lock_path.clone(),
+            fd,
+        }
+    };
+
     #[cfg(windows)]
-    {
+    let _lock_guard = {
         // On Windows, just proceed - file creation will fail if another process has it locked
         drop(&lock_file);
+        LockGuard {
+            lock_path: lock_path.clone(),
+        }
+    };
+
+    // Check if already downloaded (AFTER acquiring lock to avoid TOCTOU race)
+    if exe_path.exists() {
+        info!("ChromeDriver already cached at: {:?}", exe_path);
+        return Ok(exe_path);
     }
 
     // Download the zip file
@@ -395,9 +429,8 @@ async fn download_chromedriver_async() -> Result<PathBuf> {
         }
     }
 
-    // Clean up zip and lock file
+    // Clean up zip file (lock file cleanup is handled by _lock_guard Drop)
     let _ = fs::remove_file(&zip_path);
-    let _ = fs::remove_file(&lock_path);
 
     if exe_path.exists() {
         info!("ChromeDriver downloaded to: {:?}", exe_path);

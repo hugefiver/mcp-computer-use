@@ -43,6 +43,11 @@ This will:
 3. Launch ChromeDriver automatically
 4. Start the MCP server
 
+> ⚠️ **Security Note**: The `MCP_AUTO_DOWNLOAD_DRIVER=true` option downloads ChromeDriver from Google's Chrome for Testing API at runtime. While this is convenient for development, for production environments consider:
+> - Pre-installing ChromeDriver from trusted sources
+> - Using `MCP_DRIVER_PATH` to point to a verified driver binary
+> - Auditing the downloaded binary before use
+
 ## Installation
 
 ```bash
