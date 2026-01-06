@@ -10,7 +10,7 @@ use std::fs;
 use std::io::Write;
 use std::net::TcpStream;
 use std::path::PathBuf;
-use std::process::{Child, Command};
+use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 use tracing::{debug, info, warn};
 
@@ -23,6 +23,10 @@ const HEALTH_CHECK_INTERVAL_MS: u64 = 100;
 /// Chrome for Testing API endpoint for latest versions.
 const CHROME_VERSIONS_URL: &str =
     "https://googlechromelabs.github.io/chrome-for-testing/last-known-good-versions-with-downloads.json";
+
+/// Chrome for Testing API endpoint for known good versions (for version matching).
+const CHROME_KNOWN_GOOD_VERSIONS_URL: &str =
+    "https://googlechromelabs.github.io/chrome-for-testing/known-good-versions-with-downloads.json";
 
 /// Manages the lifecycle of a browser driver process.
 pub struct DriverManager {
@@ -123,7 +127,29 @@ impl DriverManager {
         // If not found and auto_download is enabled, download it
         if config.auto_download_driver {
             info!("Driver not found, attempting to download...");
-            return download_chromedriver_sync();
+
+            // Try to detect the browser version and download a matching ChromeDriver
+            let browser_version = match self.browser_manager.find_browser(config) {
+                Ok(browser_path) => match detect_chrome_version(&browser_path) {
+                    Ok(version) => {
+                        info!("Detected Chrome browser version: {}", version);
+                        Some(version)
+                    }
+                    Err(e) => {
+                        warn!(
+                            "Could not detect Chrome version: {}. Will download latest stable.",
+                            e
+                        );
+                        None
+                    }
+                },
+                Err(e) => {
+                    warn!("Could not find Chrome browser: {}. Will download latest stable ChromeDriver.", e);
+                    None
+                }
+            };
+
+            return download_chromedriver_sync(browser_version.as_deref());
         }
 
         Err(anyhow::anyhow!(
@@ -239,76 +265,58 @@ fn get_cache_dir() -> Result<PathBuf> {
     Ok(cache_dir)
 }
 
-/// Download ChromeDriver synchronously.
+/// Detect Chrome browser version from the binary.
 ///
-/// This function handles being called from different contexts:
-/// - From outside any runtime: creates a new runtime
-/// - From a multi-threaded runtime: uses block_in_place
-/// - From a single-threaded runtime: spawns an OS thread to avoid blocking
-fn download_chromedriver_sync() -> Result<PathBuf> {
-    info!("Downloading ChromeDriver (this may take a while)...");
+/// Returns the version string (e.g., "120.0.6099.109") or an error if detection fails.
+fn detect_chrome_version(browser_path: &PathBuf) -> Result<String> {
+    // Run the browser with --version flag to get version info
+    let output = Command::new(browser_path)
+        .arg("--version")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .with_context(|| format!("Failed to run browser with --version: {:?}", browser_path))?;
 
-    // Check if we're already inside a Tokio runtime
-    match tokio::runtime::Handle::try_current() {
-        Ok(handle) => {
-            // We're inside an existing runtime
-            // Check runtime flavor to determine safe blocking strategy
-            match handle.runtime_flavor() {
-                tokio::runtime::RuntimeFlavor::MultiThread => {
-                    // Multi-threaded runtime: block_in_place is safe
-                    tokio::task::block_in_place(|| handle.block_on(download_chromedriver_async()))
-                }
-                tokio::runtime::RuntimeFlavor::CurrentThread => {
-                    // Single-threaded runtime: spawn an OS thread to avoid blocking the runtime
-                    std::thread::spawn(move || {
-                        let rt = tokio::runtime::Builder::new_current_thread()
-                            .enable_all()
-                            .build()
-                            .with_context(|| "Failed to create runtime for driver download")?;
-                        rt.block_on(download_chromedriver_async())
-                    })
-                    .join()
-                    .map_err(|_| {
-                        anyhow::anyhow!(
-                            "ChromeDriver download failed: thread panicked during execution"
-                        )
-                    })?
-                }
-                // Handle any future runtime flavors by falling back to the safe OS thread approach
-                _ => std::thread::spawn(move || {
-                    let rt = tokio::runtime::Builder::new_current_thread()
-                        .enable_all()
-                        .build()
-                        .with_context(|| "Failed to create runtime for driver download")?;
-                    rt.block_on(download_chromedriver_async())
-                })
-                .join()
-                .map_err(|_| {
-                    anyhow::anyhow!(
-                        "ChromeDriver download failed: thread panicked during execution"
-                    )
-                })?,
-            }
-        }
-        Err(_) => {
-            // Not in a runtime, create a new one for the async download
-            let runtime = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .with_context(|| "Failed to create runtime for driver download")?;
-
-            runtime.block_on(download_chromedriver_async())
-        }
+    if !output.status.success() {
+        return Err(anyhow::anyhow!(
+            "Browser --version command failed with status: {}",
+            output.status
+        ));
     }
+
+    let version_output = String::from_utf8_lossy(&output.stdout);
+    debug!("Browser version output: {}", version_output);
+
+    // Parse version from output like "Google Chrome 120.0.6099.109" or "Chromium 120.0.6099.109"
+    // The version is typically the last space-separated token that looks like a version number
+    let version = version_output
+        .split_whitespace()
+        .find(|s| {
+            // Version should start with a digit and contain dots
+            s.chars().next().is_some_and(|c| c.is_ascii_digit()) && s.contains('.')
+        })
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "Could not parse version from browser output: {}",
+                version_output
+            )
+        })?;
+
+    Ok(version.to_string())
 }
 
-/// Download ChromeDriver asynchronously.
-async fn download_chromedriver_async() -> Result<PathBuf> {
-    let platform = get_platform();
-    let cache_dir = get_cache_dir()?;
+/// Extract major version from a full version string.
+///
+/// E.g., "120.0.6099.109" -> "120"
+fn extract_major_version(version: &str) -> Option<&str> {
+    version.split('.').next()
+}
 
-    // Fetch the latest versions JSON
-    let client = reqwest::Client::new();
+/// Get the latest stable ChromeDriver version and download URL.
+async fn get_latest_stable_chromedriver(
+    client: &reqwest::Client,
+    platform: &str,
+) -> Result<(String, String)> {
     let response: serde_json::Value = client
         .get(CHROME_VERSIONS_URL)
         .send()
@@ -318,7 +326,6 @@ async fn download_chromedriver_async() -> Result<PathBuf> {
         .await
         .with_context(|| "Failed to parse Chrome versions JSON")?;
 
-    // Get the stable channel chromedriver download URL
     let stable = response
         .get("channels")
         .and_then(|c| c.get("Stable"))
@@ -345,6 +352,181 @@ async fn download_chromedriver_async() -> Result<PathBuf> {
                 platform
             )
         })?;
+
+    Ok((version.to_string(), download_url.to_string()))
+}
+
+/// Find a ChromeDriver version matching the browser version.
+///
+/// Uses the Chrome for Testing known-good-versions API to find a ChromeDriver
+/// with the same major version as the browser.
+async fn find_matching_chromedriver_version(
+    client: &reqwest::Client,
+    browser_version: &str,
+    platform: &str,
+) -> Result<(String, String)> {
+    let browser_major = extract_major_version(browser_version).ok_or_else(|| {
+        anyhow::anyhow!("Could not extract major version from: {}", browser_version)
+    })?;
+
+    debug!(
+        "Looking for ChromeDriver matching browser major version: {}",
+        browser_major
+    );
+
+    // Fetch the known good versions JSON
+    let response: serde_json::Value = client
+        .get(CHROME_KNOWN_GOOD_VERSIONS_URL)
+        .send()
+        .await
+        .with_context(|| "Failed to fetch known good Chrome versions")?
+        .json()
+        .await
+        .with_context(|| "Failed to parse known good versions JSON")?;
+
+    let versions = response
+        .get("versions")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| anyhow::anyhow!("Versions array not found in response"))?;
+
+    // Find the best matching version (highest version with same major)
+    // Iterate in reverse since versions are typically sorted ascending
+    let matching_version = versions
+        .iter()
+        .rev()
+        .find(|v| {
+            let ver = v.get("version").and_then(|v| v.as_str()).unwrap_or("");
+            extract_major_version(ver) == Some(browser_major)
+                && v.get("downloads")
+                    .and_then(|d| d.get("chromedriver"))
+                    .is_some()
+        })
+        .ok_or_else(|| {
+            anyhow::anyhow!("No ChromeDriver found for major version {}", browser_major)
+        })?;
+
+    let version = matching_version
+        .get("version")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow::anyhow!("Version not found in matching entry"))?;
+
+    let download_url = matching_version
+        .get("downloads")
+        .and_then(|d| d.get("chromedriver"))
+        .and_then(|cd| cd.as_array())
+        .and_then(|arr| {
+            arr.iter()
+                .find(|item| item.get("platform").and_then(|p| p.as_str()) == Some(platform))
+        })
+        .and_then(|item| item.get("url"))
+        .and_then(|u| u.as_str())
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "ChromeDriver download URL not found for platform: {}",
+                platform
+            )
+        })?;
+
+    Ok((version.to_string(), download_url.to_string()))
+}
+
+/// Download ChromeDriver synchronously.
+///
+/// This function handles being called from different contexts:
+/// - From outside any runtime: creates a new runtime
+/// - From a multi-threaded runtime: uses block_in_place
+/// - From a single-threaded runtime: spawns an OS thread to avoid blocking
+///
+/// If `browser_version` is provided, attempts to download a ChromeDriver matching that version.
+/// If not provided or matching fails, downloads the latest stable version.
+fn download_chromedriver_sync(browser_version: Option<&str>) -> Result<PathBuf> {
+    info!("Downloading ChromeDriver (this may take a while)...");
+
+    let version_owned = browser_version.map(|s| s.to_string());
+
+    // Check if we're already inside a Tokio runtime
+    match tokio::runtime::Handle::try_current() {
+        Ok(handle) => {
+            // We're inside an existing runtime
+            // Check runtime flavor to determine safe blocking strategy
+            match handle.runtime_flavor() {
+                tokio::runtime::RuntimeFlavor::MultiThread => {
+                    // Multi-threaded runtime: block_in_place is safe
+                    tokio::task::block_in_place(|| {
+                        handle.block_on(download_chromedriver_async(version_owned.as_deref()))
+                    })
+                }
+                tokio::runtime::RuntimeFlavor::CurrentThread => {
+                    // Single-threaded runtime: spawn an OS thread to avoid blocking the runtime
+                    std::thread::spawn(move || {
+                        let rt = tokio::runtime::Builder::new_current_thread()
+                            .enable_all()
+                            .build()
+                            .with_context(|| "Failed to create runtime for driver download")?;
+                        rt.block_on(download_chromedriver_async(version_owned.as_deref()))
+                    })
+                    .join()
+                    .map_err(|_| {
+                        anyhow::anyhow!(
+                            "ChromeDriver download failed: thread panicked during execution"
+                        )
+                    })?
+                }
+                // Handle any future runtime flavors by falling back to the safe OS thread approach
+                _ => std::thread::spawn(move || {
+                    let rt = tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()
+                        .with_context(|| "Failed to create runtime for driver download")?;
+                    rt.block_on(download_chromedriver_async(version_owned.as_deref()))
+                })
+                .join()
+                .map_err(|_| {
+                    anyhow::anyhow!(
+                        "ChromeDriver download failed: thread panicked during execution"
+                    )
+                })?,
+            }
+        }
+        Err(_) => {
+            // Not in a runtime, create a new one for the async download
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .with_context(|| "Failed to create runtime for driver download")?;
+
+            runtime.block_on(download_chromedriver_async(version_owned.as_deref()))
+        }
+    }
+}
+
+/// Download ChromeDriver asynchronously.
+///
+/// If `browser_version` is provided, attempts to find a ChromeDriver matching that version.
+/// If not provided or no match found, downloads the latest stable version.
+async fn download_chromedriver_async(browser_version: Option<&str>) -> Result<PathBuf> {
+    let platform = get_platform();
+    let cache_dir = get_cache_dir()?;
+    let client = reqwest::Client::new();
+
+    // Try to find a matching version if browser_version is provided
+    let (version, download_url) = if let Some(browser_ver) = browser_version {
+        match find_matching_chromedriver_version(&client, browser_ver, platform).await {
+            Ok((ver, url)) => {
+                info!(
+                    "Found matching ChromeDriver version {} for browser {}",
+                    ver, browser_ver
+                );
+                (ver, url)
+            }
+            Err(e) => {
+                warn!("Could not find matching ChromeDriver for browser version {}: {}. Falling back to latest stable.", browser_ver, e);
+                get_latest_stable_chromedriver(&client, platform).await?
+            }
+        }
+    } else {
+        get_latest_stable_chromedriver(&client, platform).await?
+    };
 
     info!("Downloading ChromeDriver {} for {}...", version, platform);
 
