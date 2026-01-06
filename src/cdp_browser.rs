@@ -52,6 +52,8 @@ impl CdpBrowserController {
     }
 
     /// Initialize and open the browser using CDP.
+    /// If auto_start is false and a CDP URL is available, connects to existing browser.
+    /// Otherwise, launches a new browser instance.
     pub async fn open(&self) -> Result<EnvState> {
         let mut browser_guard = self.browser.lock().await;
         let mut page_guard = self.page.lock().await;
@@ -61,6 +63,15 @@ impl CdpBrowserController {
             drop(browser_guard);
             drop(page_guard);
             return self.current_state().await;
+        }
+
+        // If auto_start is false and we have a CDP URL, connect to existing browser
+        if !self.config.auto_start {
+            if let Some(ref cdp_url) = self.config.cdp_url {
+                drop(browser_guard);
+                drop(page_guard);
+                return self.connect(cdp_url).await;
+            }
         }
 
         info!("Opening browser via CDP...");
@@ -362,14 +373,20 @@ impl CdpBrowserController {
         tokio::time::sleep(Duration::from_millis(TYPING_DELAY_MS)).await;
 
         if clear_before_typing {
-            // Select all and delete
+            // Select all and delete using modern Selection API
             let clear_script = r#"
                 var active = document.activeElement;
-                if (active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA' || active.isContentEditable)) {
-                    if (active.select) {
-                        active.select();
-                    }
-                    document.execCommand('delete');
+                if (active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA')) {
+                    active.value = '';
+                    active.dispatchEvent(new Event('input', { bubbles: true }));
+                } else if (active && active.isContentEditable) {
+                    // Use Selection API for contentEditable elements
+                    var selection = window.getSelection();
+                    var range = document.createRange();
+                    range.selectNodeContents(active);
+                    selection.removeAllRanges();
+                    selection.addRange(range);
+                    selection.deleteFromDocument();
                 }
             "#;
             page.evaluate(clear_script)
@@ -389,7 +406,21 @@ impl CdpBrowserController {
                     active.value = (active.value || '') + text;
                     active.dispatchEvent(new Event('input', {{ bubbles: true }}));
                 }} else if (active && active.isContentEditable) {{
-                    document.execCommand('insertText', false, text);
+                    // Use modern approach for contentEditable: insert text node at selection
+                    var selection = window.getSelection();
+                    if (selection.rangeCount > 0) {{
+                        var range = selection.getRangeAt(0);
+                        range.deleteContents();
+                        var textNode = document.createTextNode(text);
+                        range.insertNode(textNode);
+                        // Move cursor to end of inserted text
+                        range.setStartAfter(textNode);
+                        range.setEndAfter(textNode);
+                        selection.removeAllRanges();
+                        selection.addRange(range);
+                    }} else {{
+                        active.textContent += text;
+                    }}
                 }} else {{
                     // Fallback: dispatch key events
                     for (var i = 0; i < text.length; i++) {{

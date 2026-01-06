@@ -108,6 +108,7 @@ async fn main() -> anyhow::Result<()> {
                     Ok(cdp_url) => {
                         info!("Browser launched with CDP at: {}", cdp_url);
                         // Store CDP URL for later use - browser will be controlled directly via CDP
+                        config.cdp_url = Some(cdp_url);
                     }
                     Err(e) => {
                         error!("Failed to launch browser with CDP: {}", e);
@@ -129,6 +130,8 @@ async fn main() -> anyhow::Result<()> {
                     "CDP endpoint available at port {}, will connect to existing browser",
                     cdp_port
                 );
+                // Store CDP URL for connecting to the existing browser
+                config.cdp_url = Some(format!("http://127.0.0.1:{}", cdp_port));
             }
             // No ChromeDriver needed in CDP mode - we use chromiumoxide directly
         }
@@ -199,8 +202,9 @@ async fn run_http_server(config: Config) -> anyhow::Result<()> {
     // Warn about open_browser_on_start in HTTP mode
     if config.open_browser_on_start {
         warn!(
-            "MCP_OPEN_BROWSER_ON_START is set but HTTP mode creates a new session per connection. \
-            Each session will open its own browser. Consider using stdio mode for shared browser instance."
+            "MCP_OPEN_BROWSER_ON_START is set, but in HTTP mode the browser is not automatically \
+            opened on session start. This option is currently only effective in stdio mode. \
+            Consider using stdio mode if you want the browser to be opened automatically."
         );
     }
 

@@ -117,6 +117,11 @@ pub struct Config {
     /// Subsequent tool calls will use this pre-opened browser instance.
     /// Default is false (browser is opened only when open_web_browser tool is called).
     pub open_browser_on_start: bool,
+
+    /// CDP URL for connecting to an existing browser.
+    /// Set automatically when auto_start launches a browser with CDP,
+    /// or can be derived from cdp_port when connecting to a manually started browser.
+    pub cdp_url: Option<String>,
 }
 
 impl Default for Config {
@@ -143,6 +148,7 @@ impl Default for Config {
             auto_start: false,
             auto_download_driver: false,
             open_browser_on_start: false,
+            cdp_url: None,
         }
     }
 }
