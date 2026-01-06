@@ -373,7 +373,7 @@ impl CdpBrowserController {
         tokio::time::sleep(Duration::from_millis(TYPING_DELAY_MS)).await;
 
         if clear_before_typing {
-            // Select all and delete using modern Selection API
+            // Clear content using appropriate method for each element type
             let clear_script = r#"
                 var active = document.activeElement;
                 if (active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA')) {
@@ -406,7 +406,7 @@ impl CdpBrowserController {
                     active.value = (active.value || '') + text;
                     active.dispatchEvent(new Event('input', {{ bubbles: true }}));
                 }} else if (active && active.isContentEditable) {{
-                    // Use modern approach for contentEditable: insert text node at selection
+                    // Replace selection with text node in contentEditable elements
                     var selection = window.getSelection();
                     if (selection.rangeCount > 0) {{
                         var range = selection.getRangeAt(0);
