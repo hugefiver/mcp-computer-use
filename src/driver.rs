@@ -395,8 +395,19 @@ async fn download_chromedriver_async() -> Result<PathBuf> {
         if result == 0 {
             // Lock failed, try blocking
             info!("Another process is downloading ChromeDriver, waiting...");
-            let block_result =
-                unsafe { LockFileEx(handle, LOCKFILE_EXCLUSIVE_LOCK, 0, 1, 0, &mut overlapped) };
+            // Reinitialize OVERLAPPED before the blocking call
+            let mut blocking_overlapped: windows_sys::Win32::System::IO::OVERLAPPED =
+                unsafe { std::mem::zeroed() };
+            let block_result = unsafe {
+                LockFileEx(
+                    handle,
+                    LOCKFILE_EXCLUSIVE_LOCK,
+                    0,
+                    1,
+                    0,
+                    &mut blocking_overlapped,
+                )
+            };
             if block_result == 0 {
                 let err = std::io::Error::last_os_error();
                 return Err(anyhow::anyhow!("Failed to acquire download lock: {}", err));
