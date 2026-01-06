@@ -111,6 +111,12 @@ pub struct Config {
     /// Whether to auto-download the browser driver if not found.
     /// Only effective when auto_start is true.
     pub auto_download_driver: bool,
+
+    /// Whether to open browser on MCP server startup.
+    /// When true, the browser will be opened automatically when the MCP server starts.
+    /// Subsequent tool calls will use this pre-opened browser instance.
+    /// Default is false (browser is opened only when open_web_browser tool is called).
+    pub open_browser_on_start: bool,
 }
 
 impl Default for Config {
@@ -136,6 +142,7 @@ impl Default for Config {
             cdp_port: None, // Fallback to DEFAULT_CDP_PORT when needed
             auto_start: false,
             auto_download_driver: false,
+            open_browser_on_start: false,
         }
     }
 }
@@ -381,6 +388,21 @@ impl Config {
                     tracing::warn!(
                         "Invalid MCP_AUTO_DOWNLOAD_DRIVER '{}', using default false",
                         auto_download
+                    );
+                    false
+                }
+            };
+        }
+
+        // Open browser on start configuration
+        if let Ok(open_on_start) = std::env::var("MCP_OPEN_BROWSER_ON_START") {
+            config.open_browser_on_start = match open_on_start.to_lowercase().as_str() {
+                "true" | "1" | "yes" => true,
+                "false" | "0" | "no" => false,
+                _ => {
+                    tracing::warn!(
+                        "Invalid MCP_OPEN_BROWSER_ON_START '{}', using default false",
+                        open_on_start
                     );
                     false
                 }

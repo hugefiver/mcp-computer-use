@@ -27,13 +27,15 @@
 //! - `MCP_UNDETECTED`: Enable undetected/stealth mode (default: false)
 //! - `MCP_CONNECTION_MODE`: Connection mode: webdriver or cdp (default: webdriver)
 //! - `MCP_CDP_PORT`: CDP port for browser connection (default: 9222)
+//! - `MCP_OPEN_BROWSER_ON_START`: Open browser on MCP server startup (default: false)
 //!
 //! # Usage
 //!
 //! 1. Use MCP_AUTO_START=true for automatic driver/browser management
 //! 2. Or manually start ChromeDriver and set MCP_WEBDRIVER_URL
 //! 3. For CDP mode: set MCP_CONNECTION_MODE=cdp with MCP_AUTO_START=true
-//! 4. Run this MCP server and connect an MCP client
+//! 4. Use MCP_OPEN_BROWSER_ON_START=true to pre-open browser on startup
+//! 5. Run this MCP server and connect an MCP client
 
 mod browser;
 mod browser_manager;
@@ -162,6 +164,10 @@ async fn run_stdio_server(config: Config) -> anyhow::Result<()> {
     info!("Running MCP server on stdio...");
 
     let server = BrowserMcpServer::new(config);
+
+    // Initialize browser if open_browser_on_start is enabled
+    server.init().await?;
+
     let service = server.serve(stdio()).await?;
 
     // Wait for the service to complete
@@ -187,6 +193,14 @@ async fn run_http_server(config: Config) -> anyhow::Result<()> {
             to the network. The HTTP endpoint has NO authentication. Only bind to non-localhost \
             addresses if you have proper security measures (TLS, authentication, firewall) in place.",
             config.http_host
+        );
+    }
+
+    // Warn about open_browser_on_start in HTTP mode
+    if config.open_browser_on_start {
+        warn!(
+            "MCP_OPEN_BROWSER_ON_START is set but HTTP mode creates a new session per connection. \
+            Each session will open its own browser. Consider using stdio mode for shared browser instance."
         );
     }
 

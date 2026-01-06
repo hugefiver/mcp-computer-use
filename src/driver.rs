@@ -127,27 +127,28 @@ impl DriverManager {
         // If not found and auto_download is enabled, download it
         if config.auto_download_driver {
             info!("Driver not found, attempting to download...");
-            
+
             // Try to detect the browser version and download a matching ChromeDriver
             let browser_version = match self.browser_manager.find_browser(config) {
-                Ok(browser_path) => {
-                    match detect_chrome_version(&browser_path) {
-                        Ok(version) => {
-                            info!("Detected Chrome browser version: {}", version);
-                            Some(version)
-                        }
-                        Err(e) => {
-                            warn!("Could not detect Chrome version: {}. Will download latest stable.", e);
-                            None
-                        }
+                Ok(browser_path) => match detect_chrome_version(&browser_path) {
+                    Ok(version) => {
+                        info!("Detected Chrome browser version: {}", version);
+                        Some(version)
                     }
-                }
+                    Err(e) => {
+                        warn!(
+                            "Could not detect Chrome version: {}. Will download latest stable.",
+                            e
+                        );
+                        None
+                    }
+                },
                 Err(e) => {
                     warn!("Could not find Chrome browser: {}. Will download latest stable ChromeDriver.", e);
                     None
                 }
             };
-            
+
             return download_chromedriver_sync(browser_version.as_deref());
         }
 
@@ -401,10 +402,7 @@ async fn find_matching_chromedriver_version(
                     .is_some()
         })
         .ok_or_else(|| {
-            anyhow::anyhow!(
-                "No ChromeDriver found for major version {}",
-                browser_major
-            )
+            anyhow::anyhow!("No ChromeDriver found for major version {}", browser_major)
         })?;
 
     let version = matching_version
@@ -515,7 +513,10 @@ async fn download_chromedriver_async(browser_version: Option<&str>) -> Result<Pa
     let (version, download_url) = if let Some(browser_ver) = browser_version {
         match find_matching_chromedriver_version(&client, browser_ver, platform).await {
             Ok((ver, url)) => {
-                info!("Found matching ChromeDriver version {} for browser {}", ver, browser_ver);
+                info!(
+                    "Found matching ChromeDriver version {} for browser {}",
+                    ver, browser_ver
+                );
                 (ver, url)
             }
             Err(e) => {

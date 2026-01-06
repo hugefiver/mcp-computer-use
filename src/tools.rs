@@ -30,9 +30,7 @@ impl BrowserBackend {
             ConnectionMode::WebDriver => {
                 BrowserBackend::WebDriver(Arc::new(BrowserController::new(config)))
             }
-            ConnectionMode::Cdp => {
-                BrowserBackend::Cdp(Arc::new(CdpBrowserController::new(config)))
-            }
+            ConnectionMode::Cdp => BrowserBackend::Cdp(Arc::new(CdpBrowserController::new(config))),
         }
     }
 
@@ -169,12 +167,10 @@ impl BrowserBackend {
     ) -> anyhow::Result<EnvState> {
         match self {
             BrowserBackend::WebDriver(ctrl) => {
-                ctrl.drag_and_drop(x, y, destination_x, destination_y)
-                    .await
+                ctrl.drag_and_drop(x, y, destination_x, destination_y).await
             }
             BrowserBackend::Cdp(ctrl) => {
-                ctrl.drag_and_drop(x, y, destination_x, destination_y)
-                    .await
+                ctrl.drag_and_drop(x, y, destination_x, destination_y).await
             }
         }
     }
@@ -315,6 +311,16 @@ impl BrowserMcpServer {
             config,
             tool_router: Self::tool_router(),
         }
+    }
+
+    /// Initialize the server, optionally opening the browser if configured.
+    /// Call this after construction if `open_browser_on_start` is enabled.
+    pub async fn init(&self) -> anyhow::Result<()> {
+        if self.config.open_browser_on_start {
+            info!("Opening browser on server start (MCP_OPEN_BROWSER_ON_START=true)");
+            self.browser.open().await?;
+        }
+        Ok(())
     }
 
     /// Get a reference to the browser backend.

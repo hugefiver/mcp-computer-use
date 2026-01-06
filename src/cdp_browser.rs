@@ -8,9 +8,7 @@ use crate::config::Config;
 use anyhow::Result;
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use chromiumoxide::browser::{Browser, BrowserConfig};
-use chromiumoxide::cdp::browser_protocol::input::{
-    DispatchKeyEventParams, DispatchKeyEventType,
-};
+use chromiumoxide::cdp::browser_protocol::input::{DispatchKeyEventParams, DispatchKeyEventType};
 use chromiumoxide::cdp::browser_protocol::page::{
     CaptureScreenshotFormat, GetNavigationHistoryParams, NavigateToHistoryEntryParams,
 };
@@ -517,7 +515,7 @@ impl CdpBrowserController {
             .await
             .map_err(|e| anyhow::anyhow!("Failed to get navigation history: {}", e))?;
 
-        let current_index = history.result.current_index as i64;
+        let current_index = history.result.current_index;
         if current_index > 0 {
             let prev_entry = &history.result.entries[(current_index - 1) as usize];
             page.execute(NavigateToHistoryEntryParams::new(prev_entry.id))

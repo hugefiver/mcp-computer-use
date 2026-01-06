@@ -11,8 +11,9 @@ A Rust MCP (Model Context Protocol) server that provides browser control capabil
 - **Tool Filtering**: Disable specific tools as needed
 - **Multiple Transports**: Supports both stdio and HTTP streamable transports
 - **Auto-Start Mode**: Automatically launches ChromeDriver and browser
-- **Auto-Download Driver**: Automatically downloads ChromeDriver if not found
-- **CDP Mode**: Chrome DevTools Protocol connection for existing browser control
+- **Auto-Download Driver**: Automatically downloads ChromeDriver matching your browser version
+- **CDP Mode**: Direct Chrome DevTools Protocol connection (no WebDriver required!)
+- **Pre-Open Browser**: Optionally open browser when MCP server starts
 - **Undetected Mode**: Stealth mode to help avoid bot detection (inspired by patchright)
 - **Smart Detection**: Auto-detect browser and driver from PATH and common locations
 
@@ -23,7 +24,7 @@ A Rust MCP (Model Context Protocol) server that provides browser control capabil
 - One of the following:
   - Use `MCP_AUTO_START=true` for fully automatic setup (recommended)
   - A WebDriver server running (e.g., ChromeDriver)
-  - Use CDP mode (`MCP_CONNECTION_MODE=cdp`) with an existing browser
+  - Use CDP mode (`MCP_CONNECTION_MODE=cdp`) for direct browser control without WebDriver
 
 ## Quick Start
 
@@ -70,9 +71,10 @@ The server can be configured using environment variables:
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `MCP_AUTO_START` | Automatically manage browser/driver lifecycle | `false` |
-| `MCP_AUTO_DOWNLOAD_DRIVER` | Download ChromeDriver if not found | `false` |
+| `MCP_AUTO_DOWNLOAD_DRIVER` | Download ChromeDriver if not found (matches browser version) | `false` |
 | `MCP_CONNECTION_MODE` | Connection mode: `webdriver` or `cdp` | `webdriver` |
 | `MCP_HEADLESS` | Run browser in headless mode | `true` |
+| `MCP_OPEN_BROWSER_ON_START` | Open browser when MCP server starts | `false` |
 
 ### Browser Settings
 
@@ -141,19 +143,16 @@ MCP_WEBDRIVER_URL=http://localhost:9515 \
 
 ### 3. CDP Mode (Connect to Existing Browser)
 
+CDP (Chrome DevTools Protocol) mode allows direct browser control without WebDriver.
+
 Connect to an already running Chrome browser with debugging enabled:
 
 ```bash
 # Start Chrome with debugging enabled
 google-chrome --remote-debugging-port=9222
 
-# Start ChromeDriver separately
-chromedriver --port=9515 &
-
-# In another terminal, run the MCP server (connects to existing browser via ChromeDriver)
-# Note: MCP_WEBDRIVER_URL points to your running ChromeDriver
+# In another terminal, run the MCP server (connects directly via CDP - no ChromeDriver needed!)
 MCP_CONNECTION_MODE=cdp \
-MCP_WEBDRIVER_URL=http://localhost:9515 \
 ./target/release/mcp-computer-use
 ```
 
@@ -165,7 +164,21 @@ MCP_AUTO_START=true \
 ./target/release/mcp-computer-use
 ```
 
-### 4. HTTP Transport Mode
+> **Note:** CDP mode uses direct Chrome DevTools Protocol connection and does not require ChromeDriver. However, some tab management features are not available in CDP mode.
+
+### 4. Pre-Open Browser Mode
+
+Open the browser when MCP server starts, so it's ready for tool calls:
+
+```bash
+MCP_AUTO_START=true \
+MCP_OPEN_BROWSER_ON_START=true \
+./target/release/mcp-computer-use
+```
+
+This is useful when you want the browser to be immediately available without first calling the `open_web_browser` tool.
+
+### 5. HTTP Transport Mode
 
 Run the server with HTTP streamable transport:
 
