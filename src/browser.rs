@@ -430,12 +430,12 @@ impl BrowserController {
 
         // Firefox headless mode
         if self.config.headless {
-            caps.add_arg("-headless")?;
+            caps.add_arg("--headless")?;
         }
 
         // Set window size via arguments for Firefox
-        caps.add_arg(&format!("-width={}", self.config.screen_width))?;
-        caps.add_arg(&format!("-height={}", self.config.screen_height))?;
+        caps.add_arg(&format!("--width={}", self.config.screen_width))?;
+        caps.add_arg(&format!("--height={}", self.config.screen_height))?;
 
         // Set binary path if specified
         if let Some(ref binary_path) = self.config.browser_binary_path {

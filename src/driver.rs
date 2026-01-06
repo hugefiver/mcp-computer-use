@@ -1173,6 +1173,13 @@ async fn download_geckodriver_async() -> Result<PathBuf> {
             }
         }
 
+        if !exe_path.exists() {
+            return Err(anyhow::anyhow!(
+                "Failed to find GeckoDriver executable '{}' in downloaded zip",
+                exe_name
+            ));
+        }
+
         let _ = fs::remove_file(&archive_path);
     } else {
         // Extract from tar.gz on Unix
@@ -1184,13 +1191,10 @@ async fn download_geckodriver_async() -> Result<PathBuf> {
         drop(archive_file);
 
         // Use Command to extract tar.gz
+        let archive_path_str = archive_path.to_string_lossy().into_owned();
+        let version_dir_str = version_dir.to_string_lossy().into_owned();
         let output = Command::new("tar")
-            .args([
-                "-xzf",
-                archive_path.to_str().unwrap(),
-                "-C",
-                version_dir.to_str().unwrap(),
-            ])
+            .args(["-xzf", &archive_path_str, "-C", &version_dir_str])
             .output()
             .with_context(|| "Failed to extract GeckoDriver tar.gz")?;
 
@@ -1326,6 +1330,24 @@ mod tests {
         assert_eq!(exe_name, "chromedriver.exe");
         #[cfg(not(target_os = "windows"))]
         assert_eq!(exe_name, "chromedriver");
+    }
+
+    #[test]
+    fn test_get_msedgedriver_exe_name() {
+        let exe_name = get_msedgedriver_exe_name();
+        #[cfg(target_os = "windows")]
+        assert_eq!(exe_name, "msedgedriver.exe");
+        #[cfg(not(target_os = "windows"))]
+        assert_eq!(exe_name, "msedgedriver");
+    }
+
+    #[test]
+    fn test_get_geckodriver_exe_name() {
+        let exe_name = get_geckodriver_exe_name();
+        #[cfg(target_os = "windows")]
+        assert_eq!(exe_name, "geckodriver.exe");
+        #[cfg(not(target_os = "windows"))]
+        assert_eq!(exe_name, "geckodriver");
     }
 
     #[test]
