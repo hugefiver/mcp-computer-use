@@ -52,7 +52,11 @@ fn parse_duration(s: &str) -> Result<Duration, String> {
         .parse()
         .map_err(|e| format!("Invalid number '{}': {}", num_str, e))?;
 
-    Ok(Duration::from_secs(num * multiplier))
+    let seconds = num
+        .checked_mul(multiplier)
+        .ok_or_else(|| format!("Duration overflow for value '{}'", s))?;
+
+    Ok(Duration::from_secs(seconds))
 }
 
 /// Transport mode for the MCP server.
@@ -547,5 +551,11 @@ mod tests {
         assert!(parse_duration("").is_err());
         assert!(parse_duration("abc").is_err());
         assert!(parse_duration("10x").is_err());
+    }
+
+    #[test]
+    fn test_parse_duration_overflow() {
+        // Very large number should return an overflow error
+        assert!(parse_duration("99999999999999999999999h").is_err());
     }
 }

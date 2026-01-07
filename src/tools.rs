@@ -14,7 +14,7 @@ use rmcp::{
     schemars, tool, tool_handler, tool_router, ServerHandler,
 };
 use serde::{Deserialize, Serialize};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::Mutex;
@@ -308,8 +308,11 @@ pub struct BrowserMcpServer {
     /// Used for idle timeout tracking.
     last_activity: Arc<AtomicU64>,
     /// Handle to the idle timeout monitor task.
-    /// When this is dropped, the task should be cancelled.
+    /// Used to manage the task lifecycle; the task is explicitly cancelled (via `abort`) during shutdown.
     idle_monitor_handle: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
+    /// Flag to indicate that a browser operation is currently in progress.
+    /// Used to prevent the idle timeout from closing the browser during active operations.
+    operation_in_progress: Arc<AtomicBool>,
 }
 
 impl BrowserMcpServer {
@@ -330,11 +333,21 @@ impl BrowserMcpServer {
             tool_router: Self::tool_router(),
             last_activity,
             idle_monitor_handle: Arc::new(Mutex::new(None)),
+            operation_in_progress: Arc::new(AtomicBool::new(false)),
         }
     }
 
-    /// Update the last activity timestamp.
+    /// Update the last activity timestamp and mark operation as in progress.
     fn touch(&self) {
+        self.operation_in_progress.store(true, Ordering::SeqCst);
+        self.last_activity
+            .store(current_timestamp(), Ordering::SeqCst);
+    }
+
+    /// Mark the current operation as complete.
+    fn operation_complete(&self) {
+        self.operation_in_progress.store(false, Ordering::SeqCst);
+        // Update timestamp again to ensure accurate idle tracking
         self.last_activity
             .store(current_timestamp(), Ordering::SeqCst);
     }
@@ -360,6 +373,7 @@ impl BrowserMcpServer {
 
         let browser = Arc::clone(&self.browser);
         let last_activity = Arc::clone(&self.last_activity);
+        let operation_in_progress = Arc::clone(&self.operation_in_progress);
         // Check 4 times per timeout period, but at least once per second
         // to avoid excessive polling for very short timeouts
         let check_interval = (idle_timeout / 4).max(Duration::from_secs(1));
@@ -368,11 +382,21 @@ impl BrowserMcpServer {
             loop {
                 tokio::time::sleep(check_interval).await;
 
+                // Skip if an operation is currently in progress
+                if operation_in_progress.load(Ordering::SeqCst) {
+                    continue;
+                }
+
                 let last = last_activity.load(Ordering::SeqCst);
                 let now = current_timestamp();
                 let idle_secs = now.saturating_sub(last);
 
                 if idle_secs >= idle_timeout.as_secs() {
+                    // Double-check that no operation started while we were checking
+                    if operation_in_progress.load(Ordering::SeqCst) {
+                        continue;
+                    }
+
                     info!(
                         "Browser idle for {}s (timeout: {}s), closing browser",
                         idle_secs,
@@ -397,10 +421,9 @@ impl BrowserMcpServer {
             info!("Opening browser on server start (MCP_OPEN_BROWSER_ON_START=true)");
             self.browser.open().await?;
             self.touch();
+            // Start idle monitor only after browser is actually opened
+            self.start_idle_monitor().await;
         }
-
-        // Start idle monitor
-        self.start_idle_monitor().await;
 
         Ok(())
     }
@@ -614,10 +637,16 @@ impl BrowserMcpServer {
         }
         self.touch();
         info!("Opening web browser");
-        match self.browser.open().await {
-            Ok(state) => env_state_to_result(state, Some("Browser opened successfully")),
+        let result = match self.browser.open().await {
+            Ok(state) => {
+                // Start idle monitor when browser is opened on-demand
+                self.start_idle_monitor().await;
+                env_state_to_result(state, Some("Browser opened successfully"))
+            }
             Err(e) => error_to_result(&format!("Failed to open browser: {}", e)),
-        }
+        };
+        self.operation_complete();
+        result
     }
 
     /// Clicks at a specific x, y coordinate on the webpage.
@@ -633,13 +662,15 @@ impl BrowserMcpServer {
         }
         self.touch();
         info!("Clicking at ({}, {})", params.x, params.y);
-        match self.browser.click_at(params.x, params.y).await {
+        let result = match self.browser.click_at(params.x, params.y).await {
             Ok(state) => env_state_to_result(
                 state,
                 Some(&format!("Clicked at ({}, {})", params.x, params.y)),
             ),
             Err(e) => error_to_result(&format!("Failed to click: {}", e)),
-        }
+        };
+        self.operation_complete();
+        result
     }
 
     /// Hovers at a specific x, y coordinate on the webpage.
@@ -655,13 +686,15 @@ impl BrowserMcpServer {
         }
         self.touch();
         info!("Hovering at ({}, {})", params.x, params.y);
-        match self.browser.hover_at(params.x, params.y).await {
+        let result = match self.browser.hover_at(params.x, params.y).await {
             Ok(state) => env_state_to_result(
                 state,
                 Some(&format!("Hovered at ({}, {})", params.x, params.y)),
             ),
             Err(e) => error_to_result(&format!("Failed to hover: {}", e)),
-        }
+        };
+        self.operation_complete();
+        result
     }
 
     /// Types text at a specific x, y coordinate.
@@ -677,7 +710,7 @@ impl BrowserMcpServer {
         }
         self.touch();
         info!("Typing at ({}, {}): {}", params.x, params.y, params.text);
-        match self
+        let result = match self
             .browser
             .type_text_at(
                 params.x,
@@ -696,7 +729,9 @@ impl BrowserMcpServer {
                 )),
             ),
             Err(e) => error_to_result(&format!("Failed to type: {}", e)),
-        }
+        };
+        self.operation_complete();
+        result
     }
 
     /// Scrolls the entire webpage in the specified direction.
@@ -712,13 +747,15 @@ impl BrowserMcpServer {
         }
         self.touch();
         info!("Scrolling document: {}", params.direction);
-        match self.browser.scroll_document(&params.direction).await {
+        let result = match self.browser.scroll_document(&params.direction).await {
             Ok(state) => env_state_to_result(
                 state,
                 Some(&format!("Scrolled document {}", params.direction)),
             ),
             Err(e) => error_to_result(&format!("Failed to scroll: {}", e)),
-        }
+        };
+        self.operation_complete();
+        result
     }
 
     /// Scrolls at a specific coordinate in the specified direction.
@@ -737,7 +774,7 @@ impl BrowserMcpServer {
             "Scrolling at ({}, {}) direction: {} magnitude: {}",
             params.x, params.y, params.direction, params.magnitude
         );
-        match self
+        let result = match self
             .browser
             .scroll_at(params.x, params.y, &params.direction, params.magnitude)
             .await
@@ -750,7 +787,9 @@ impl BrowserMcpServer {
                 )),
             ),
             Err(e) => error_to_result(&format!("Failed to scroll: {}", e)),
-        }
+        };
+        self.operation_complete();
+        result
     }
 
     /// Waits for 5 seconds to allow unfinished webpage processes to complete.
@@ -761,10 +800,12 @@ impl BrowserMcpServer {
         }
         self.touch();
         info!("Waiting 5 seconds");
-        match self.browser.wait_5_seconds().await {
+        let result = match self.browser.wait_5_seconds().await {
             Ok(state) => env_state_to_result(state, Some("Waited 5 seconds")),
             Err(e) => error_to_result(&format!("Failed to wait: {}", e)),
-        }
+        };
+        self.operation_complete();
+        result
     }
 
     /// Navigates back to the previous webpage in the browser history.
@@ -775,10 +816,12 @@ impl BrowserMcpServer {
         }
         self.touch();
         info!("Going back");
-        match self.browser.go_back().await {
+        let result = match self.browser.go_back().await {
             Ok(state) => env_state_to_result(state, Some("Navigated back")),
             Err(e) => error_to_result(&format!("Failed to go back: {}", e)),
-        }
+        };
+        self.operation_complete();
+        result
     }
 
     /// Navigates forward to the next webpage in the browser history.
@@ -789,10 +832,12 @@ impl BrowserMcpServer {
         }
         self.touch();
         info!("Going forward");
-        match self.browser.go_forward().await {
+        let result = match self.browser.go_forward().await {
             Ok(state) => env_state_to_result(state, Some("Navigated forward")),
             Err(e) => error_to_result(&format!("Failed to go forward: {}", e)),
-        }
+        };
+        self.operation_complete();
+        result
     }
 
     /// Directly jumps to a search engine home page.
@@ -805,10 +850,12 @@ impl BrowserMcpServer {
         }
         self.touch();
         info!("Navigating to search engine");
-        match self.browser.search().await {
+        let result = match self.browser.search().await {
             Ok(state) => env_state_to_result(state, Some("Navigated to search engine")),
             Err(e) => error_to_result(&format!("Failed to navigate to search: {}", e)),
-        }
+        };
+        self.operation_complete();
+        result
     }
 
     /// Navigates directly to a specified URL.
@@ -824,10 +871,12 @@ impl BrowserMcpServer {
         }
         self.touch();
         info!("Navigating to: {}", params.url);
-        match self.browser.navigate(&params.url).await {
+        let result = match self.browser.navigate(&params.url).await {
             Ok(state) => env_state_to_result(state, Some(&format!("Navigated to {}", params.url))),
             Err(e) => error_to_result(&format!("Failed to navigate: {}", e)),
-        }
+        };
+        self.operation_complete();
+        result
     }
 
     /// Presses keyboard keys and combinations.
@@ -843,12 +892,14 @@ impl BrowserMcpServer {
         }
         self.touch();
         info!("Pressing key combination: {:?}", params.keys);
-        match self.browser.key_combination(params.keys.clone()).await {
+        let result = match self.browser.key_combination(params.keys.clone()).await {
             Ok(state) => {
                 env_state_to_result(state, Some(&format!("Pressed keys: {:?}", params.keys)))
             }
             Err(e) => error_to_result(&format!("Failed to press keys: {}", e)),
-        }
+        };
+        self.operation_complete();
+        result
     }
 
     /// Drag and drop an element from one position to another.
@@ -867,7 +918,7 @@ impl BrowserMcpServer {
             "Drag and drop from ({}, {}) to ({}, {})",
             params.x, params.y, params.destination_x, params.destination_y
         );
-        match self
+        let result = match self
             .browser
             .drag_and_drop(
                 params.x,
@@ -885,7 +936,9 @@ impl BrowserMcpServer {
                 )),
             ),
             Err(e) => error_to_result(&format!("Failed to drag and drop: {}", e)),
-        }
+        };
+        self.operation_complete();
+        result
     }
 
     /// Returns the current state of the webpage.
@@ -898,10 +951,12 @@ impl BrowserMcpServer {
         }
         self.touch();
         info!("Getting current state");
-        match self.browser.current_state().await {
+        let result = match self.browser.current_state().await {
             Ok(state) => env_state_to_result(state, Some("Current state retrieved")),
             Err(e) => error_to_result(&format!("Failed to get current state: {}", e)),
-        }
+        };
+        self.operation_complete();
+        result
     }
 
     // ========== Tab Management Tools ==========
@@ -919,7 +974,7 @@ impl BrowserMcpServer {
         }
         self.touch();
         info!("Creating new tab with URL: {:?}", params.url);
-        match self.browser.new_tab(params.url.as_deref()).await {
+        let result = match self.browser.new_tab(params.url.as_deref()).await {
             Ok((tab_info, state)) => {
                 let response = NewTabResponse {
                     tab: tab_info,
@@ -933,7 +988,9 @@ impl BrowserMcpServer {
                 Ok(CallToolResult::success(vec![text_content, image_content]))
             }
             Err(e) => error_to_result(&format!("Failed to create new tab: {}", e)),
-        }
+        };
+        self.operation_complete();
+        result
     }
 
     /// Closes a browser tab.
@@ -947,10 +1004,12 @@ impl BrowserMcpServer {
         }
         self.touch();
         info!("Closing tab: {:?}", params.handle);
-        match self.browser.close_tab(params.handle.as_deref()).await {
+        let result = match self.browser.close_tab(params.handle.as_deref()).await {
             Ok(state) => env_state_to_result(state, Some("Tab closed successfully")),
             Err(e) => error_to_result(&format!("Failed to close tab: {}", e)),
-        }
+        };
+        self.operation_complete();
+        result
     }
 
     /// Switches to a different browser tab.
@@ -969,14 +1028,16 @@ impl BrowserMcpServer {
             "Switching to tab: handle={:?}, index={:?}",
             params.handle, params.index
         );
-        match self
+        let result = match self
             .browser
             .switch_tab(params.handle.as_deref(), params.index)
             .await
         {
             Ok(state) => env_state_to_result(state, Some("Switched to tab")),
             Err(e) => error_to_result(&format!("Failed to switch tab: {}", e)),
-        }
+        };
+        self.operation_complete();
+        result
     }
 
     /// Lists all open browser tabs.
@@ -989,7 +1050,7 @@ impl BrowserMcpServer {
         }
         self.touch();
         info!("Listing all tabs");
-        match self.browser.list_tabs().await {
+        let result = match self.browser.list_tabs().await {
             Ok((tabs, state)) => {
                 let response = TabListResponse {
                     tabs,
@@ -1003,7 +1064,9 @@ impl BrowserMcpServer {
                 Ok(CallToolResult::success(vec![text_content, image_content]))
             }
             Err(e) => error_to_result(&format!("Failed to list tabs: {}", e)),
-        }
+        };
+        self.operation_complete();
+        result
     }
 }
 
