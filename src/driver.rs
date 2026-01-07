@@ -1119,7 +1119,7 @@ async fn download_geckodriver_async() -> Result<PathBuf> {
 
     let expected_name = build_geckodriver_archive_name(version, platform);
 
-    let download_url = assets
+    let download_url = if let Some(url) = assets
         .iter()
         .find(|asset| {
             asset
@@ -1129,15 +1129,22 @@ async fn download_geckodriver_async() -> Result<PathBuf> {
         })
         .and_then(|asset| asset.get("browser_download_url"))
         .and_then(|u| u.as_str())
-        .map(|u| u.to_string())
-        .unwrap_or_else(|| {
-            let fallback = format!("{}/{}", GECKODRIVER_LATEST_DOWNLOAD_BASE_URL, expected_name);
-            warn!(
-                "GeckoDriver asset '{}' not found; falling back to {}",
-                expected_name, fallback
-            );
-            fallback
-        });
+    {
+        url.to_string()
+    } else {
+        if expected_name.contains(['/', '\\']) {
+            return Err(anyhow::anyhow!(
+                "Invalid GeckoDriver asset name: {}",
+                expected_name
+            ));
+        }
+        let fallback = format!("{}/{}", GECKODRIVER_LATEST_DOWNLOAD_BASE_URL, expected_name);
+        warn!(
+            "GeckoDriver asset '{}' not found; falling back to {}",
+            expected_name, fallback
+        );
+        fallback
+    };
 
     // Create version-specific directory
     let version_dir = cache_dir.join(format!("geckodriver-{}", version));
