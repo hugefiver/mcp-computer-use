@@ -166,15 +166,26 @@ async fn main() -> anyhow::Result<()> {
 async fn run_stdio_server(config: Config) -> anyhow::Result<()> {
     info!("Running MCP server on stdio...");
 
+    let auto_start = config.auto_start;
     let server = BrowserMcpServer::new(config);
 
     // Initialize browser if open_browser_on_start is enabled
     server.init().await?;
 
-    let service = server.serve(stdio()).await?;
+    // Clone server for serve() since it takes ownership.
+    // The clone shares the same Arc<BrowserBackend>, so shutdown() on either
+    // reference will properly close the browser.
+    let service = server.clone().serve(stdio()).await?;
 
     // Wait for the service to complete
     service.waiting().await?;
+
+    // When auto_start is enabled, ensure browser is properly closed
+    if auto_start {
+        if let Err(e) = server.shutdown().await {
+            warn!("Error during browser shutdown: {}", e);
+        }
+    }
 
     Ok(())
 }
