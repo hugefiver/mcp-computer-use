@@ -363,10 +363,9 @@ fn build_msedgedriver_download_url(version: &str, platform: &str) -> Result<Stri
 fn build_geckodriver_archive_name(version: &str, platform: &str) -> Result<String> {
     validate_driver_component("GeckoDriver version", version)?;
     validate_driver_component("GeckoDriver platform", platform)?;
-    let extension = if platform.starts_with("win") {
-        "zip"
-    } else {
-        "tar.gz"
+    let extension = match platform {
+        "win64" | "win32" | "win-aarch64" => "zip",
+        _ => "tar.gz",
     };
     Ok(format!(
         "geckodriver-{}-{}.{}",
@@ -1147,6 +1146,7 @@ async fn download_geckodriver_async() -> Result<PathBuf> {
     {
         url.to_string()
     } else {
+        validate_driver_component("GeckoDriver archive name", &expected_name)?;
         let fallback = format!("{}/{}", GECKODRIVER_LATEST_DOWNLOAD_BASE_URL, expected_name);
         warn!(
             "GeckoDriver asset '{}' not found; falling back to {}",
