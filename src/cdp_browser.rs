@@ -53,8 +53,8 @@ impl CdpBrowserController {
     }
 
     /// Initialize and open the browser using CDP.
-    /// If auto_start is false and a CDP URL is available, connects to existing browser.
-    /// Otherwise, launches a new browser instance.
+    /// If a CDP URL is configured (e.g., browser was already launched by BrowserManager),
+    /// connects to that browser. Otherwise, launches a new browser instance.
     pub async fn open(&self) -> Result<EnvState> {
         let mut browser_guard = self.browser.lock().await;
         let mut page_guard = self.page.lock().await;
@@ -66,13 +66,12 @@ impl CdpBrowserController {
             return self.current_state().await;
         }
 
-        // If auto_start is false and we have a CDP URL, connect to existing browser
-        if !self.config.auto_start {
-            if let Some(ref cdp_url) = self.config.cdp_url {
-                drop(browser_guard);
-                drop(page_guard);
-                return self.connect(cdp_url).await;
-            }
+        // If we have a CDP URL (set by BrowserManager in auto_start mode or manually),
+        // connect to the existing browser instead of launching a new one
+        if let Some(ref cdp_url) = self.config.cdp_url {
+            drop(browser_guard);
+            drop(page_guard);
+            return self.connect(cdp_url).await;
         }
 
         info!("Opening browser via CDP...");

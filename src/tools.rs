@@ -218,6 +218,14 @@ impl BrowserBackend {
             )),
         }
     }
+
+    /// Close the browser and clean up resources.
+    pub async fn close(&self) -> anyhow::Result<()> {
+        match self {
+            BrowserBackend::WebDriver(ctrl) => ctrl.close().await,
+            BrowserBackend::Cdp(ctrl) => ctrl.close().await,
+        }
+    }
 }
 
 /// Response type for browser actions that includes screenshot and URL.
@@ -321,6 +329,14 @@ impl BrowserMcpServer {
             self.browser.open().await?;
         }
         Ok(())
+    }
+
+    /// Shutdown the server and close the browser.
+    /// This should be called before the program exits when auto_start is enabled
+    /// to ensure the browser is properly closed.
+    pub async fn shutdown(&self) -> anyhow::Result<()> {
+        info!("Shutting down MCP server, closing browser...");
+        self.browser.close().await
     }
 
     /// Get a reference to the browser backend.

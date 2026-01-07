@@ -86,11 +86,11 @@ The server can be configured using environment variables:
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `MCP_AUTO_START` | Automatically manage browser/driver lifecycle | `false` |
+| `MCP_AUTO_START` | Automatically manage browser/driver lifecycle. When enabled, the browser will be closed when the MCP server exits. | `false` |
 | `MCP_AUTO_DOWNLOAD_DRIVER` | Download browser driver if not found (matches browser version) | `false` |
 | `MCP_CONNECTION_MODE` | Connection mode: `webdriver` or `cdp` | `webdriver` |
 | `MCP_HEADLESS` | Run browser in headless mode | `true` |
-| `MCP_OPEN_BROWSER_ON_START` | Open browser when MCP server starts | `false` |
+| `MCP_OPEN_BROWSER_ON_START` | Open browser when MCP server starts. When `false`, browser is opened on-demand via `open_web_browser` tool. In both cases, the browser instance is reused for all subsequent operations. | `false` |
 
 ### Browser Settings
 
@@ -143,6 +143,12 @@ MCP_AUTO_START=true \
 MCP_AUTO_DOWNLOAD_DRIVER=true \
 ./target/release/mcp-computer-use
 ```
+
+When `MCP_AUTO_START=true`:
+- The driver (ChromeDriver, EdgeDriver, or GeckoDriver) is automatically launched
+- Browser sessions are automatically managed
+- **The browser is properly closed when the MCP server exits**
+- Browser instance is reused across all tool calls
 
 ### 2. Manual WebDriver Mode
 
@@ -203,6 +209,12 @@ MCP_OPEN_BROWSER_ON_START=true \
 ```
 
 This is useful when you want the browser to be immediately available without first calling the `open_web_browser` tool.
+
+**Browser Instance Behavior:**
+- When `MCP_OPEN_BROWSER_ON_START=true`: Browser opens at server startup and is reused for all subsequent operations
+- When `MCP_OPEN_BROWSER_ON_START=false` (default): Browser opens on-demand when `open_web_browser` tool is called, and is reused for all subsequent operations
+
+In both cases, the same browser instance is reused across all tool calls during the session.
 
 ### 5. HTTP Transport Mode
 
