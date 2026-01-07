@@ -105,7 +105,6 @@ impl CdpBrowserController {
         if self.config.undetected {
             info!("Enabling undetected mode");
             builder = builder
-                .arg("--disable-blink-features=AutomationControlled")
                 .arg("--disable-infobars")
                 .arg("--disable-notifications");
         }

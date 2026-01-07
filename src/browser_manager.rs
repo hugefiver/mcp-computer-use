@@ -460,7 +460,6 @@ impl BrowserManager {
 
         // Undetected mode
         if config.undetected {
-            cmd.arg("--disable-blink-features=AutomationControlled");
             cmd.arg("--disable-infobars");
             cmd.arg("--disable-notifications");
         }

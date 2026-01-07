@@ -487,7 +487,6 @@ impl BrowserController {
         // Undetected mode settings (inspired by patchright/undetected-chromedriver)
         if self.config.undetected {
             info!("Enabling undetected mode");
-            caps.add_arg("--disable-blink-features=AutomationControlled")?;
             caps.add_exclude_switch("enable-automation")?;
             caps.add_experimental_option("useAutomationExtension", false)?;
             caps.add_arg("--disable-infobars")?;
