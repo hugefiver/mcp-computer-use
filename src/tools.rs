@@ -339,23 +339,23 @@ impl BrowserMcpServer {
 
     /// Update the last activity timestamp and mark operation as in progress.
     fn touch(&self) {
-        self.operation_in_progress.store(true, Ordering::SeqCst);
+        self.operation_in_progress.store(true, Ordering::Release);
         self.last_activity
-            .store(current_timestamp(), Ordering::SeqCst);
+            .store(current_timestamp(), Ordering::Release);
     }
 
     /// Mark the current operation as complete.
     fn operation_complete(&self) {
-        self.operation_in_progress.store(false, Ordering::SeqCst);
-        // Update timestamp again to ensure accurate idle tracking
+        // Update timestamp first to ensure accurate idle tracking
         self.last_activity
-            .store(current_timestamp(), Ordering::SeqCst);
+            .store(current_timestamp(), Ordering::Release);
+        self.operation_in_progress.store(false, Ordering::Release);
     }
 
     /// Get the duration since last activity.
     #[allow(dead_code)]
     fn idle_duration(&self) -> Duration {
-        let last = self.last_activity.load(Ordering::SeqCst);
+        let last = self.last_activity.load(Ordering::Acquire);
         let now = current_timestamp();
         Duration::from_secs(now.saturating_sub(last))
     }
@@ -382,21 +382,19 @@ impl BrowserMcpServer {
             loop {
                 tokio::time::sleep(check_interval).await;
 
-                // Skip if an operation is currently in progress
-                if operation_in_progress.load(Ordering::SeqCst) {
+                // Check if an operation is currently in progress first
+                if operation_in_progress.load(Ordering::Acquire) {
                     continue;
                 }
 
-                let last = last_activity.load(Ordering::SeqCst);
+                let last = last_activity.load(Ordering::Acquire);
                 let now = current_timestamp();
                 let idle_secs = now.saturating_sub(last);
 
-                if idle_secs >= idle_timeout.as_secs() {
-                    // Double-check that no operation started while we were checking
-                    if operation_in_progress.load(Ordering::SeqCst) {
-                        continue;
-                    }
-
+                // Check idle time and verify no operation started
+                if idle_secs >= idle_timeout.as_secs()
+                    && !operation_in_progress.load(Ordering::Acquire)
+                {
                     info!(
                         "Browser idle for {}s (timeout: {}s), closing browser",
                         idle_secs,
@@ -637,16 +635,19 @@ impl BrowserMcpServer {
         }
         self.touch();
         info!("Opening web browser");
-        let result = match self.browser.open().await {
-            Ok(state) => {
-                // Start idle monitor when browser is opened on-demand
-                self.start_idle_monitor().await;
-                env_state_to_result(state, Some("Browser opened successfully"))
-            }
+        let result = self.browser.open().await;
+        let tool_result = match &result {
+            Ok(state) => env_state_to_result(state.clone(), Some("Browser opened successfully")),
             Err(e) => error_to_result(&format!("Failed to open browser: {}", e)),
         };
         self.operation_complete();
-        result
+
+        // Start idle monitor after operation is complete (only if browser opened successfully)
+        if result.is_ok() {
+            self.start_idle_monitor().await;
+        }
+
+        tool_result
     }
 
     /// Clicks at a specific x, y coordinate on the webpage.
