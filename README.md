@@ -91,6 +91,7 @@ The server can be configured using environment variables:
 | `MCP_CONNECTION_MODE` | Connection mode: `webdriver` or `cdp` | `webdriver` |
 | `MCP_HEADLESS` | Run browser in headless mode | `true` |
 | `MCP_OPEN_BROWSER_ON_START` | Open browser when MCP server starts. When `false`, browser is opened on-demand via `open_web_browser` tool. In both cases, the browser instance is reused for all subsequent operations. | `false` |
+| `MCP_IDLE_TIMEOUT` | Duration of inactivity after which the browser is automatically closed. Accepts formats like `10m` (10 minutes), `30s` (30 seconds), `1h` (1 hour), or plain seconds. Set to `0` to disable idle timeout. | `10m` |
 
 ### Browser Settings
 

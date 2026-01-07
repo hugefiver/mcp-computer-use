@@ -14,8 +14,11 @@ use rmcp::{
     schemars, tool, tool_handler, tool_router, ServerHandler,
 };
 use serde::{Deserialize, Serialize};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use tracing::info;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use tokio::sync::Mutex;
+use tracing::{debug, info, warn};
 
 /// Unified browser interface that supports both WebDriver and CDP modes.
 pub enum BrowserBackend {
@@ -301,6 +304,12 @@ pub struct BrowserMcpServer {
     browser: Arc<BrowserBackend>,
     config: Arc<Config>,
     tool_router: ToolRouter<Self>,
+    /// Timestamp of last activity (seconds since UNIX epoch).
+    /// Used for idle timeout tracking.
+    last_activity: Arc<AtomicU64>,
+    /// Handle to the idle timeout monitor task.
+    /// When this is dropped, the task should be cancelled.
+    idle_monitor_handle: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
 }
 
 impl BrowserMcpServer {
@@ -314,11 +323,69 @@ impl BrowserMcpServer {
     /// This avoids cloning the config for each session in HTTP mode.
     pub fn new_with_config(config: Arc<Config>) -> Self {
         let browser = Arc::new(BrowserBackend::new((*config).clone()));
+        let last_activity = Arc::new(AtomicU64::new(current_timestamp()));
         Self {
             browser,
             config,
             tool_router: Self::tool_router(),
+            last_activity,
+            idle_monitor_handle: Arc::new(Mutex::new(None)),
         }
+    }
+
+    /// Update the last activity timestamp.
+    fn touch(&self) {
+        self.last_activity
+            .store(current_timestamp(), Ordering::SeqCst);
+    }
+
+    /// Get the duration since last activity.
+    #[allow(dead_code)]
+    fn idle_duration(&self) -> Duration {
+        let last = self.last_activity.load(Ordering::SeqCst);
+        let now = current_timestamp();
+        Duration::from_secs(now.saturating_sub(last))
+    }
+
+    /// Start the idle timeout monitor if configured.
+    /// This spawns a background task that closes the browser after idle timeout.
+    pub async fn start_idle_monitor(&self) {
+        let idle_timeout = self.config.idle_timeout;
+
+        // If idle timeout is zero, don't start the monitor
+        if idle_timeout.is_zero() {
+            debug!("Idle timeout is disabled (set to 0)");
+            return;
+        }
+
+        let browser = Arc::clone(&self.browser);
+        let last_activity = Arc::clone(&self.last_activity);
+        let check_interval = idle_timeout / 4; // Check 4 times per timeout period
+
+        let handle = tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(check_interval).await;
+
+                let last = last_activity.load(Ordering::SeqCst);
+                let now = current_timestamp();
+                let idle_secs = now.saturating_sub(last);
+
+                if idle_secs >= idle_timeout.as_secs() {
+                    info!(
+                        "Browser idle for {}s (timeout: {}s), closing browser",
+                        idle_secs,
+                        idle_timeout.as_secs()
+                    );
+                    if let Err(e) = browser.close().await {
+                        warn!("Error closing browser due to idle timeout: {}", e);
+                    }
+                    break;
+                }
+            }
+        });
+
+        let mut guard = self.idle_monitor_handle.lock().await;
+        *guard = Some(handle);
     }
 
     /// Initialize the server, optionally opening the browser if configured.
@@ -327,7 +394,12 @@ impl BrowserMcpServer {
         if self.config.open_browser_on_start {
             info!("Opening browser on server start (MCP_OPEN_BROWSER_ON_START=true)");
             self.browser.open().await?;
+            self.touch();
         }
+
+        // Start idle monitor
+        self.start_idle_monitor().await;
+
         Ok(())
     }
 
@@ -336,6 +408,14 @@ impl BrowserMcpServer {
     /// to ensure the browser is properly closed.
     pub async fn shutdown(&self) -> anyhow::Result<()> {
         info!("Shutting down MCP server, closing browser...");
+
+        // Cancel idle monitor if running
+        let mut guard = self.idle_monitor_handle.lock().await;
+        if let Some(handle) = guard.take() {
+            handle.abort();
+        }
+        drop(guard);
+
         self.browser.close().await
     }
 
@@ -344,6 +424,14 @@ impl BrowserMcpServer {
     pub fn browser(&self) -> &Arc<BrowserBackend> {
         &self.browser
     }
+}
+
+/// Get the current timestamp in seconds since UNIX epoch.
+fn current_timestamp() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or(Duration::ZERO)
+        .as_secs()
 }
 
 // Tool parameter types
@@ -522,6 +610,7 @@ impl BrowserMcpServer {
         if self.config.is_tool_disabled(tool_names::OPEN_WEB_BROWSER) {
             return disabled_tool_error(tool_names::OPEN_WEB_BROWSER);
         }
+        self.touch();
         info!("Opening web browser");
         match self.browser.open().await {
             Ok(state) => env_state_to_result(state, Some("Browser opened successfully")),
@@ -540,6 +629,7 @@ impl BrowserMcpServer {
         if self.config.is_tool_disabled(tool_names::CLICK_AT) {
             return disabled_tool_error(tool_names::CLICK_AT);
         }
+        self.touch();
         info!("Clicking at ({}, {})", params.x, params.y);
         match self.browser.click_at(params.x, params.y).await {
             Ok(state) => env_state_to_result(
@@ -561,6 +651,7 @@ impl BrowserMcpServer {
         if self.config.is_tool_disabled(tool_names::HOVER_AT) {
             return disabled_tool_error(tool_names::HOVER_AT);
         }
+        self.touch();
         info!("Hovering at ({}, {})", params.x, params.y);
         match self.browser.hover_at(params.x, params.y).await {
             Ok(state) => env_state_to_result(
@@ -582,6 +673,7 @@ impl BrowserMcpServer {
         if self.config.is_tool_disabled(tool_names::TYPE_TEXT_AT) {
             return disabled_tool_error(tool_names::TYPE_TEXT_AT);
         }
+        self.touch();
         info!("Typing at ({}, {}): {}", params.x, params.y, params.text);
         match self
             .browser
@@ -616,6 +708,7 @@ impl BrowserMcpServer {
         if self.config.is_tool_disabled(tool_names::SCROLL_DOCUMENT) {
             return disabled_tool_error(tool_names::SCROLL_DOCUMENT);
         }
+        self.touch();
         info!("Scrolling document: {}", params.direction);
         match self.browser.scroll_document(&params.direction).await {
             Ok(state) => env_state_to_result(
@@ -637,6 +730,7 @@ impl BrowserMcpServer {
         if self.config.is_tool_disabled(tool_names::SCROLL_AT) {
             return disabled_tool_error(tool_names::SCROLL_AT);
         }
+        self.touch();
         info!(
             "Scrolling at ({}, {}) direction: {} magnitude: {}",
             params.x, params.y, params.direction, params.magnitude
@@ -663,6 +757,7 @@ impl BrowserMcpServer {
         if self.config.is_tool_disabled(tool_names::WAIT_5_SECONDS) {
             return disabled_tool_error(tool_names::WAIT_5_SECONDS);
         }
+        self.touch();
         info!("Waiting 5 seconds");
         match self.browser.wait_5_seconds().await {
             Ok(state) => env_state_to_result(state, Some("Waited 5 seconds")),
@@ -676,6 +771,7 @@ impl BrowserMcpServer {
         if self.config.is_tool_disabled(tool_names::GO_BACK) {
             return disabled_tool_error(tool_names::GO_BACK);
         }
+        self.touch();
         info!("Going back");
         match self.browser.go_back().await {
             Ok(state) => env_state_to_result(state, Some("Navigated back")),
@@ -689,6 +785,7 @@ impl BrowserMcpServer {
         if self.config.is_tool_disabled(tool_names::GO_FORWARD) {
             return disabled_tool_error(tool_names::GO_FORWARD);
         }
+        self.touch();
         info!("Going forward");
         match self.browser.go_forward().await {
             Ok(state) => env_state_to_result(state, Some("Navigated forward")),
@@ -704,6 +801,7 @@ impl BrowserMcpServer {
         if self.config.is_tool_disabled(tool_names::SEARCH) {
             return disabled_tool_error(tool_names::SEARCH);
         }
+        self.touch();
         info!("Navigating to search engine");
         match self.browser.search().await {
             Ok(state) => env_state_to_result(state, Some("Navigated to search engine")),
@@ -722,6 +820,7 @@ impl BrowserMcpServer {
         if self.config.is_tool_disabled(tool_names::NAVIGATE) {
             return disabled_tool_error(tool_names::NAVIGATE);
         }
+        self.touch();
         info!("Navigating to: {}", params.url);
         match self.browser.navigate(&params.url).await {
             Ok(state) => env_state_to_result(state, Some(&format!("Navigated to {}", params.url))),
@@ -740,6 +839,7 @@ impl BrowserMcpServer {
         if self.config.is_tool_disabled(tool_names::KEY_COMBINATION) {
             return disabled_tool_error(tool_names::KEY_COMBINATION);
         }
+        self.touch();
         info!("Pressing key combination: {:?}", params.keys);
         match self.browser.key_combination(params.keys.clone()).await {
             Ok(state) => {
@@ -760,6 +860,7 @@ impl BrowserMcpServer {
         if self.config.is_tool_disabled(tool_names::DRAG_AND_DROP) {
             return disabled_tool_error(tool_names::DRAG_AND_DROP);
         }
+        self.touch();
         info!(
             "Drag and drop from ({}, {}) to ({}, {})",
             params.x, params.y, params.destination_x, params.destination_y
@@ -793,6 +894,7 @@ impl BrowserMcpServer {
         if self.config.is_tool_disabled(tool_names::CURRENT_STATE) {
             return disabled_tool_error(tool_names::CURRENT_STATE);
         }
+        self.touch();
         info!("Getting current state");
         match self.browser.current_state().await {
             Ok(state) => env_state_to_result(state, Some("Current state retrieved")),
@@ -813,6 +915,7 @@ impl BrowserMcpServer {
         if self.config.is_tool_disabled(tool_names::NEW_TAB) {
             return disabled_tool_error(tool_names::NEW_TAB);
         }
+        self.touch();
         info!("Creating new tab with URL: {:?}", params.url);
         match self.browser.new_tab(params.url.as_deref()).await {
             Ok((tab_info, state)) => {
@@ -840,6 +943,7 @@ impl BrowserMcpServer {
         if self.config.is_tool_disabled(tool_names::CLOSE_TAB) {
             return disabled_tool_error(tool_names::CLOSE_TAB);
         }
+        self.touch();
         info!("Closing tab: {:?}", params.handle);
         match self.browser.close_tab(params.handle.as_deref()).await {
             Ok(state) => env_state_to_result(state, Some("Tab closed successfully")),
@@ -858,6 +962,7 @@ impl BrowserMcpServer {
         if self.config.is_tool_disabled(tool_names::SWITCH_TAB) {
             return disabled_tool_error(tool_names::SWITCH_TAB);
         }
+        self.touch();
         info!(
             "Switching to tab: handle={:?}, index={:?}",
             params.handle, params.index
@@ -880,6 +985,7 @@ impl BrowserMcpServer {
         if self.config.is_tool_disabled(tool_names::LIST_TABS) {
             return disabled_tool_error(tool_names::LIST_TABS);
         }
+        self.touch();
         info!("Listing all tabs");
         match self.browser.list_tabs().await {
             Ok((tabs, state)) => {

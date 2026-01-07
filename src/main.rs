@@ -10,7 +10,7 @@
 //!
 //! - `MCP_BROWSER_PATH`: Path to the browser binary (auto-detected if not set)
 //! - `MCP_WEBDRIVER_URL`: WebDriver server URL (auto-determined when MCP_AUTO_START=true)
-//! - `MCP_BROWSER_TYPE`: Browser type (currently only `chrome` is supported)
+//! - `MCP_BROWSER_TYPE`: Browser type: `chrome`, `edge`, `firefox`, or `safari`
 //! - `MCP_SCREEN_WIDTH`: Screen width in pixels (default: 1280)
 //! - `MCP_SCREEN_HEIGHT`: Screen height in pixels (default: 720)
 //! - `MCP_INITIAL_URL`: Initial URL to load (default: https://www.google.com)
@@ -28,6 +28,7 @@
 //! - `MCP_CONNECTION_MODE`: Connection mode: webdriver or cdp (default: webdriver)
 //! - `MCP_CDP_PORT`: CDP port for browser connection (default: 9222)
 //! - `MCP_OPEN_BROWSER_ON_START`: Open browser on MCP server startup (default: false)
+//! - `MCP_IDLE_TIMEOUT`: Idle timeout duration (e.g., "10m", "30s", "0" to disable) (default: 10m)
 //!
 //! # Usage
 //!
@@ -99,8 +100,8 @@ async fn main() -> anyhow::Result<()> {
             info!("Using CDP (Chrome DevTools Protocol) mode - no WebDriver required");
             let cdp_port = config.effective_cdp_port();
 
-            if config.auto_start {
-                // Auto-start: launch browser with CDP enabled
+            if config.auto_start && config.open_browser_on_start {
+                // Auto-start with open_browser_on_start: launch browser with CDP enabled now
                 match driver_manager
                     .browser_manager()
                     .launch_browser_with_cdp(&config)
@@ -115,6 +116,12 @@ async fn main() -> anyhow::Result<()> {
                         return Err(e);
                     }
                 }
+            } else if config.auto_start {
+                // Auto-start without open_browser_on_start: browser will be launched on-demand
+                // by CdpBrowserController when open_web_browser tool is called
+                info!(
+                    "CDP auto-start mode enabled, browser will be launched on-demand via open_web_browser tool"
+                );
             } else {
                 // Check if CDP endpoint is available (user started browser manually)
                 if !driver_manager.browser_manager().is_cdp_available(cdp_port) {
@@ -166,7 +173,6 @@ async fn main() -> anyhow::Result<()> {
 async fn run_stdio_server(config: Config) -> anyhow::Result<()> {
     info!("Running MCP server on stdio...");
 
-    let auto_start = config.auto_start;
     let server = BrowserMcpServer::new(config);
 
     // Initialize browser if open_browser_on_start is enabled
@@ -180,11 +186,10 @@ async fn run_stdio_server(config: Config) -> anyhow::Result<()> {
     // Wait for the service to complete
     service.waiting().await?;
 
-    // When auto_start is enabled, ensure browser is properly closed
-    if auto_start {
-        if let Err(e) = server.shutdown().await {
-            warn!("Error during browser shutdown: {}", e);
-        }
+    // Always attempt to close the browser session gracefully on exit
+    // This ensures the WebDriver/CDP session is properly closed
+    if let Err(e) = server.shutdown().await {
+        warn!("Error during browser shutdown: {}", e);
     }
 
     Ok(())
