@@ -1147,12 +1147,6 @@ async fn download_geckodriver_async() -> Result<PathBuf> {
     {
         url.to_string()
     } else {
-        if expected_name.contains(['/', '\\']) {
-            return Err(anyhow::anyhow!(
-                "Invalid GeckoDriver asset name: {}",
-                expected_name
-            ));
-        }
         let fallback = format!("{}/{}", GECKODRIVER_LATEST_DOWNLOAD_BASE_URL, expected_name);
         warn!(
             "GeckoDriver asset '{}' not found; falling back to {}",
@@ -1178,7 +1172,7 @@ async fn download_geckodriver_async() -> Result<PathBuf> {
 
     // Download the archive
     let archive_response = client
-        .get(&download_url)
+        .get(download_url)
         .send()
         .await
         .with_context(|| "Failed to download GeckoDriver")?;
