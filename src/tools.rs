@@ -338,6 +338,10 @@ impl BrowserMcpServer {
     }
 
     /// Update the last activity timestamp and mark operation as in progress.
+    /// Note: The two atomic stores are not atomic as a unit. A reader could see
+    /// `operation_in_progress=true` but the old `last_activity` timestamp if it reads
+    /// between the two stores. This is acceptable for idle timeout tracking since
+    /// the monitor will simply wait for the next check interval.
     fn touch(&self) {
         self.operation_in_progress.store(true, Ordering::Release);
         self.last_activity
@@ -362,6 +366,7 @@ impl BrowserMcpServer {
 
     /// Start the idle timeout monitor if configured.
     /// This spawns a background task that closes the browser after idle timeout.
+    /// If a monitor is already running, this function does nothing.
     pub async fn start_idle_monitor(&self) {
         let idle_timeout = self.config.idle_timeout;
 
@@ -369,6 +374,15 @@ impl BrowserMcpServer {
         if idle_timeout.is_zero() {
             debug!("Idle timeout is disabled (set to 0)");
             return;
+        }
+
+        // Check if a monitor is already running
+        {
+            let guard = self.idle_monitor_handle.lock().await;
+            if guard.is_some() {
+                debug!("Idle monitor is already running, skipping start");
+                return;
+            }
         }
 
         let browser = Arc::clone(&self.browser);
@@ -395,6 +409,10 @@ impl BrowserMcpServer {
                 if idle_secs >= idle_timeout.as_secs()
                     && !operation_in_progress.load(Ordering::Acquire)
                 {
+                    // Set operation_in_progress to prevent new operations from starting
+                    // while we're closing the browser
+                    operation_in_progress.store(true, Ordering::Release);
+
                     info!(
                         "Browser idle for {}s (timeout: {}s), closing browser",
                         idle_secs,
@@ -403,6 +421,9 @@ impl BrowserMcpServer {
                     if let Err(e) = browser.close().await {
                         warn!("Error closing browser due to idle timeout: {}", e);
                     }
+
+                    // Clear the flag after closing
+                    operation_in_progress.store(false, Ordering::Release);
                     break;
                 }
             }
@@ -417,8 +438,11 @@ impl BrowserMcpServer {
     pub async fn init(&self) -> anyhow::Result<()> {
         if self.config.open_browser_on_start {
             info!("Opening browser on server start (MCP_OPEN_BROWSER_ON_START=true)");
+            // Note: touch() and start_idle_monitor() are only called if open() succeeds
+            // due to the ? operator returning early on error
             self.browser.open().await?;
             self.touch();
+            self.operation_complete();
             // Start idle monitor only after browser is actually opened
             self.start_idle_monitor().await;
         }
