@@ -351,7 +351,7 @@ fn build_msedgedriver_download_url(version: &str, platform: &str) -> String {
 
 /// Build the GeckoDriver archive name for the current platform.
 fn build_geckodriver_archive_name(version: &str, platform: &str) -> String {
-    let extension = if cfg!(target_os = "windows") {
+    let extension = if platform.starts_with("win") {
         "zip"
     } else {
         "tar.gz"
@@ -1377,9 +1377,6 @@ mod tests {
     #[test]
     fn test_build_geckodriver_archive_name() {
         let name = build_geckodriver_archive_name("v0.34.0", "linux64");
-        #[cfg(target_os = "windows")]
-        let expected = "geckodriver-v0.34.0-linux64.zip";
-        #[cfg(not(target_os = "windows"))]
         let expected = "geckodriver-v0.34.0-linux64.tar.gz";
         assert_eq!(name, expected);
     }
