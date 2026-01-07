@@ -33,7 +33,12 @@ const GECKODRIVER_RELEASES_URL: &str =
     "https://api.github.com/repos/mozilla/geckodriver/releases/latest";
 
 /// Microsoft Edge WebDriver download page (we construct URLs based on version).
-const MSEDGEDRIVER_BASE_URL: &str = "https://msedgedriver.azureedge.net";
+const MSEDGEDRIVER_BASE_URL: &str =
+    "https://msedgewebdriverstorage.blob.core.windows.net/edgewebdriver";
+
+/// Fallback base URL for direct GeckoDriver downloads.
+const GECKODRIVER_LATEST_DOWNLOAD_BASE_URL: &str =
+    "https://github.com/mozilla/geckodriver/releases/latest/download";
 
 /// Manages the lifecycle of a browser driver process.
 pub struct DriverManager {
@@ -334,6 +339,38 @@ fn get_geckodriver_exe_name() -> &'static str {
     } else {
         "geckodriver"
     }
+}
+
+/// Validate driver component strings to prevent path traversal.
+fn validate_driver_component(name: &str, value: &str) -> Result<()> {
+    if value.is_empty() || value.contains(['/', '\\']) {
+        return Err(anyhow::anyhow!("Invalid {} value: '{}'", name, value));
+    }
+    Ok(())
+}
+
+/// Build the Edge WebDriver download URL.
+fn build_msedgedriver_download_url(version: &str, platform: &str) -> Result<String> {
+    validate_driver_component("Edge version", version)?;
+    validate_driver_component("Edge platform", platform)?;
+    Ok(format!(
+        "{}/{}/edgedriver_{}.zip",
+        MSEDGEDRIVER_BASE_URL, version, platform
+    ))
+}
+
+/// Build the GeckoDriver archive name for the current platform.
+fn build_geckodriver_archive_name(version: &str, platform: &str) -> Result<String> {
+    validate_driver_component("GeckoDriver version", version)?;
+    validate_driver_component("GeckoDriver platform", platform)?;
+    let extension = match platform {
+        "win64" | "win32" | "win-aarch64" => "zip",
+        _ => "tar.gz",
+    };
+    Ok(format!(
+        "geckodriver-{}-{}.{}",
+        version, platform, extension
+    ))
 }
 
 /// Get the cache directory for downloaded drivers.
@@ -903,11 +940,7 @@ async fn download_edgedriver_async(browser_version: Option<&str>) -> Result<Path
     info!("Downloading EdgeDriver {} for {}...", version, platform);
 
     // Construct download URL
-    // Format: https://msedgedriver.azureedge.net/{version}/edgedriver_{platform}.zip
-    let download_url = format!(
-        "{}/{}/edgedriver_{}.zip",
-        MSEDGEDRIVER_BASE_URL, version, platform
-    );
+    let download_url = build_msedgedriver_download_url(&version, platform)?;
 
     // Create version-specific directory
     let version_dir = cache_dir.join(format!("msedgedriver-{}", version));
@@ -1098,15 +1131,9 @@ async fn download_geckodriver_async() -> Result<PathBuf> {
         .and_then(|a| a.as_array())
         .ok_or_else(|| anyhow::anyhow!("Could not find assets in GeckoDriver release"))?;
 
-    // Build expected filename pattern
-    let extension = if cfg!(target_os = "windows") {
-        "zip"
-    } else {
-        "tar.gz"
-    };
-    let expected_name = format!("geckodriver-{}-{}.{}", version, platform, extension);
+    let expected_name = build_geckodriver_archive_name(version, platform)?;
 
-    let download_url = assets
+    let download_url = if let Some(url) = assets
         .iter()
         .find(|asset| {
             asset
@@ -1116,13 +1143,17 @@ async fn download_geckodriver_async() -> Result<PathBuf> {
         })
         .and_then(|asset| asset.get("browser_download_url"))
         .and_then(|u| u.as_str())
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "GeckoDriver download not found for platform: {} (looking for {})",
-                platform,
-                expected_name
-            )
-        })?;
+    {
+        url.to_string()
+    } else {
+        validate_driver_component("GeckoDriver archive name", &expected_name)?;
+        let fallback = format!("{}/{}", GECKODRIVER_LATEST_DOWNLOAD_BASE_URL, expected_name);
+        warn!(
+            "GeckoDriver asset '{}' not found; falling back to {}",
+            expected_name, fallback
+        );
+        fallback
+    };
 
     // Create version-specific directory
     let version_dir = cache_dir.join(format!("geckodriver-{}", version));
@@ -1348,6 +1379,35 @@ mod tests {
         assert_eq!(exe_name, "geckodriver.exe");
         #[cfg(not(target_os = "windows"))]
         assert_eq!(exe_name, "geckodriver");
+    }
+
+    #[test]
+    fn test_build_msedgedriver_download_url() {
+        let url = build_msedgedriver_download_url("1.2.3", "win64").unwrap();
+        assert_eq!(
+            url,
+            format!("{}/1.2.3/edgedriver_win64.zip", MSEDGEDRIVER_BASE_URL)
+        );
+    }
+
+    #[test]
+    fn test_build_geckodriver_archive_name() {
+        let name = build_geckodriver_archive_name("v0.34.0", "linux64").unwrap();
+        let expected = "geckodriver-v0.34.0-linux64.tar.gz";
+        assert_eq!(name, expected);
+    }
+
+    #[test]
+    fn test_build_geckodriver_archive_name_windows() {
+        let name = build_geckodriver_archive_name("v0.34.0", "win64").unwrap();
+        let expected = "geckodriver-v0.34.0-win64.zip";
+        assert_eq!(name, expected);
+    }
+
+    #[test]
+    fn test_invalid_driver_component_rejected() {
+        assert!(build_msedgedriver_download_url("../bad", "win64").is_err());
+        assert!(build_geckodriver_archive_name("v0.34.0", "bad/plat").is_err());
     }
 
     #[test]
