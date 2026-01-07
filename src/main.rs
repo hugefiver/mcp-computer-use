@@ -172,6 +172,9 @@ async fn run_stdio_server(config: Config) -> anyhow::Result<()> {
     // Initialize browser if open_browser_on_start is enabled
     server.init().await?;
 
+    // Clone server for serve() since it takes ownership.
+    // The clone shares the same Arc<BrowserBackend>, so shutdown() on either
+    // reference will properly close the browser.
     let service = server.clone().serve(stdio()).await?;
 
     // Wait for the service to complete
