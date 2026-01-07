@@ -360,7 +360,9 @@ impl BrowserMcpServer {
 
         let browser = Arc::clone(&self.browser);
         let last_activity = Arc::clone(&self.last_activity);
-        let check_interval = idle_timeout / 4; // Check 4 times per timeout period
+        // Check 4 times per timeout period, but at least once per second
+        // to avoid excessive polling for very short timeouts
+        let check_interval = (idle_timeout / 4).max(Duration::from_secs(1));
 
         let handle = tokio::spawn(async move {
             loop {
@@ -430,7 +432,7 @@ impl BrowserMcpServer {
 fn current_timestamp() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .unwrap_or(Duration::ZERO)
+        .expect("System time should be after UNIX epoch")
         .as_secs()
 }
 
