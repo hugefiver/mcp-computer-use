@@ -5,6 +5,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::path::PathBuf;
+use std::time::Duration;
 
 /// Default WebDriver port (ChromeDriver default).
 pub const DEFAULT_DRIVER_PORT: u16 = 9515;
@@ -14,6 +15,49 @@ pub const DEFAULT_CDP_PORT: u16 = 9222;
 
 /// Default HTTP server port.
 pub const DEFAULT_HTTP_PORT: u16 = 8080;
+
+/// Parse a duration string into a Duration.
+///
+/// Accepts formats like:
+/// - "10m" (10 minutes)
+/// - "5s" (5 seconds)
+/// - "1h" (1 hour)
+/// - "0" or "0s" (disable - returns Duration::ZERO)
+/// - Plain number (interpreted as seconds)
+fn parse_duration(s: &str) -> Result<Duration, String> {
+    let s = s.trim().to_lowercase();
+
+    if s.is_empty() {
+        return Err("Empty duration string".to_string());
+    }
+
+    // Check for disable case
+    if s == "0" {
+        return Ok(Duration::ZERO);
+    }
+
+    // Try to parse with suffix
+    let (num_str, multiplier) = if s.ends_with('s') {
+        (&s[..s.len() - 1], 1u64)
+    } else if s.ends_with('m') {
+        (&s[..s.len() - 1], 60u64)
+    } else if s.ends_with('h') {
+        (&s[..s.len() - 1], 3600u64)
+    } else {
+        // Assume seconds if no suffix
+        (s.as_str(), 1u64)
+    };
+
+    let num: u64 = num_str
+        .parse()
+        .map_err(|e| format!("Invalid number '{}': {}", num_str, e))?;
+
+    let seconds = num
+        .checked_mul(multiplier)
+        .ok_or_else(|| format!("Duration overflow for value '{}'", s))?;
+
+    Ok(Duration::from_secs(seconds))
+}
 
 /// Transport mode for the MCP server.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -122,6 +166,12 @@ pub struct Config {
     /// Set automatically when auto_start launches a browser with CDP,
     /// or can be derived from cdp_port when connecting to a manually started browser.
     pub cdp_url: Option<String>,
+
+    /// Idle timeout duration for automatically closing the browser when inactive.
+    /// After this duration of no operations, the browser will be closed automatically.
+    /// Set to 0 (or Duration::ZERO) to disable idle timeout.
+    /// Default is 10 minutes.
+    pub idle_timeout: std::time::Duration,
 }
 
 impl Default for Config {
@@ -149,6 +199,7 @@ impl Default for Config {
             auto_download_driver: false,
             open_browser_on_start: false,
             cdp_url: None,
+            idle_timeout: std::time::Duration::from_secs(600), // 10 minutes default
         }
     }
 }
@@ -415,6 +466,19 @@ impl Config {
             };
         }
 
+        // Idle timeout configuration
+        // Accepts duration strings like "10m", "5s", "1h", "0" (disable), or plain seconds
+        if let Ok(timeout_str) = std::env::var("MCP_IDLE_TIMEOUT") {
+            config.idle_timeout = parse_duration(&timeout_str).unwrap_or_else(|e| {
+                tracing::warn!(
+                    "Invalid MCP_IDLE_TIMEOUT '{}': {}, using default 10m",
+                    timeout_str,
+                    e
+                );
+                std::time::Duration::from_secs(600)
+            });
+        }
+
         Ok(config)
     }
 
@@ -445,4 +509,53 @@ pub mod tool_names {
     pub const CLOSE_TAB: &str = "close_tab";
     pub const SWITCH_TAB: &str = "switch_tab";
     pub const LIST_TABS: &str = "list_tabs";
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_duration_seconds() {
+        assert_eq!(parse_duration("30").unwrap(), Duration::from_secs(30));
+        assert_eq!(parse_duration("30s").unwrap(), Duration::from_secs(30));
+        assert_eq!(parse_duration("60S").unwrap(), Duration::from_secs(60));
+    }
+
+    #[test]
+    fn test_parse_duration_minutes() {
+        assert_eq!(parse_duration("10m").unwrap(), Duration::from_secs(600));
+        assert_eq!(parse_duration("5M").unwrap(), Duration::from_secs(300));
+    }
+
+    #[test]
+    fn test_parse_duration_hours() {
+        assert_eq!(parse_duration("1h").unwrap(), Duration::from_secs(3600));
+        assert_eq!(parse_duration("2H").unwrap(), Duration::from_secs(7200));
+    }
+
+    #[test]
+    fn test_parse_duration_zero() {
+        assert_eq!(parse_duration("0").unwrap(), Duration::ZERO);
+        assert_eq!(parse_duration("0s").unwrap(), Duration::ZERO);
+        assert_eq!(parse_duration("0m").unwrap(), Duration::ZERO);
+    }
+
+    #[test]
+    fn test_parse_duration_whitespace() {
+        assert_eq!(parse_duration("  10m  ").unwrap(), Duration::from_secs(600));
+    }
+
+    #[test]
+    fn test_parse_duration_invalid() {
+        assert!(parse_duration("").is_err());
+        assert!(parse_duration("abc").is_err());
+        assert!(parse_duration("10x").is_err());
+    }
+
+    #[test]
+    fn test_parse_duration_overflow() {
+        // Very large number should return an overflow error
+        assert!(parse_duration("99999999999999999999999h").is_err());
+    }
 }
