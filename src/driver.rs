@@ -1398,6 +1398,13 @@ mod tests {
     }
 
     #[test]
+    fn test_build_geckodriver_archive_name_windows() {
+        let name = build_geckodriver_archive_name("v0.34.0", "win64").unwrap();
+        let expected = "geckodriver-v0.34.0-win64.zip";
+        assert_eq!(name, expected);
+    }
+
+    #[test]
     fn test_invalid_driver_component_rejected() {
         assert!(build_msedgedriver_download_url("../bad", "win64").is_err());
         assert!(build_geckodriver_archive_name("v0.34.0", "bad/plat").is_err());
