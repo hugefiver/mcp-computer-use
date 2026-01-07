@@ -376,13 +376,11 @@ impl BrowserMcpServer {
             return;
         }
 
-        // Check if a monitor is already running
-        {
-            let guard = self.idle_monitor_handle.lock().await;
-            if guard.is_some() {
-                debug!("Idle monitor is already running, skipping start");
-                return;
-            }
+        // Acquire lock and hold it while checking and spawning to prevent race conditions
+        let mut guard = self.idle_monitor_handle.lock().await;
+        if guard.is_some() {
+            debug!("Idle monitor is already running, skipping start");
+            return;
         }
 
         let browser = Arc::clone(&self.browser);
@@ -405,13 +403,17 @@ impl BrowserMcpServer {
                 let now = current_timestamp();
                 let idle_secs = now.saturating_sub(last);
 
-                // Check idle time and verify no operation started
-                if idle_secs >= idle_timeout.as_secs()
-                    && !operation_in_progress.load(Ordering::Acquire)
-                {
-                    // Set operation_in_progress to prevent new operations from starting
-                    // while we're closing the browser
-                    operation_in_progress.store(true, Ordering::Release);
+                // Check idle time and atomically claim operation_in_progress
+                if idle_secs >= idle_timeout.as_secs() {
+                    // Atomically transition operation_in_progress from false to true.
+                    // If this fails, another operation has started and we should not close.
+                    let claimed = operation_in_progress
+                        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                        .is_ok();
+
+                    if !claimed {
+                        continue;
+                    }
 
                     info!(
                         "Browser idle for {}s (timeout: {}s), closing browser",
@@ -429,7 +431,6 @@ impl BrowserMcpServer {
             }
         });
 
-        let mut guard = self.idle_monitor_handle.lock().await;
         *guard = Some(handle);
     }
 
