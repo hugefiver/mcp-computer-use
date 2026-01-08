@@ -14,7 +14,7 @@ Rust-a MCP (Model Context Protocol) servilo kiu provizas foliumilan regadon por 
 - **Langeta administrado**: krei, fermi, ŝalti, listigi langetojn
 - **Ekrankopio post ĉiu ago** por klara vida reagado
 - **Multoblaj transportoj**: subteno por stdio kaj HTTP flua reĝimo
-- **Aŭtomata prizorgado**: laŭvola aŭto-komenco kaj aŭto-elŝuto de stiriloj
+- **Aŭtomata prizorgado**: laŭvola aŭtomate-lanĉado kaj aŭto-elŝuto de stiriloj
 
 ## Rapida starto
 
@@ -34,7 +34,7 @@ MCP_BROWSER_TYPE=firefox MCP_AUTO_START=true MCP_AUTO_DOWNLOAD_DRIVER=true ./tar
 
 | Variablo | Priskribo | Defaŭlta valoro |
 | -------- | --------- | --------------- |
-| `MCP_AUTO_START` | Ĉu aŭtomate mastrumi la retumilon/stirilon | `false` |
+| `MCP_AUTO_START` | Ĉu aŭtomate administri la retumilon/stirilon | `false` |
 | `MCP_AUTO_DOWNLOAD_DRIVER` | Elŝuti kongruan stirilon se ne trovita | `false` |
 | `MCP_CONNECTION_MODE` | Konekta reĝimo: `webdriver` aŭ `cdp` | `webdriver` |
 | `MCP_BROWSER_TYPE` | Retumila tipo: `chrome`, `edge`, `firefox`, `safari` | `chrome` |

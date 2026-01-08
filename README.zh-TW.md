@@ -35,7 +35,7 @@ MCP_BROWSER_TYPE=firefox MCP_AUTO_START=true MCP_AUTO_DOWNLOAD_DRIVER=true ./tar
 | 變數 | 說明 | 預設值 |
 | ---- | ---- | ------ |
 | `MCP_AUTO_START` | 是否自動管理瀏覽器/驅動生命週期 | `false` |
-| `MCP_AUTO_DOWNLOAD_DRIVER` | 找不到時自動下載相容的瀏覽器驅動 | `false` |
+| `MCP_AUTO_DOWNLOAD_DRIVER` | 找不到時自動下載兼容的瀏覽器驅動 | `false` |
 | `MCP_CONNECTION_MODE` | 連線模式：`webdriver` 或 `cdp` | `webdriver` |
 | `MCP_BROWSER_TYPE` | 瀏覽器類型：`chrome`、`edge`、`firefox`、`safari` | `chrome` |
 | `MCP_HEADLESS` | 是否以無頭模式執行瀏覽器 | `true` |
