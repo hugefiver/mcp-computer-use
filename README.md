@@ -1,5 +1,9 @@
 # MCP Computer Use
 
+[![CI](https://github.com/hugefiver/mcp-computer-use/actions/workflows/ci.yml/badge.svg)](https://github.com/hugefiver/mcp-computer-use/actions/workflows/ci.yml) [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
+English | [简体中文](README.zh-CN.md) | [繁體中文](README.zh-TW.md) | [Esperanto](README.eo.md)
+
 A Rust MCP (Model Context Protocol) server that provides browser control capabilities for AI models. This implementation uses the `thirtyfour` WebDriver library to control browsers and implements all Gemini computer use predefined tools.
 
 ## Features
