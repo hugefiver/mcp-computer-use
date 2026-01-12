@@ -20,7 +20,7 @@ thirtyfour = { version = "0.36", features = ["tokio-multi-threaded"] }
 chromiumoxide = { version = "0.8", default-features = false, features = ["tokio-runtime"] }
 
 # Driver download support
-zip = "2.1"
+zip = "7.0"
 dirs = "6.0"
 reqwest = { version = "0.12", features = ["json"] }
 flate2 = "1.0"
