@@ -23,7 +23,7 @@ chromiumoxide = { version = "0.8", default-features = false, features = ["tokio-
 zip = "7.0"
 dirs = "6.0"
 reqwest = { version = "0.13", features = ["json"] }
-flate2 = "1.0"
+flate2 = "1.1"
 tar = "0.4"
 
 # HTTP server for streamable HTTP transport
